@@ -1,0 +1,507 @@
+import type { AppLanguage } from "@/i18n/language";
+import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+
+export type SuggestedSet = { weight: number; reps: number };
+
+export type VolumeTrend = "up" | "down" | "stable" | "unknown";
+export type FatigueSignal = "high" | "moderate" | "low" | "unknown";
+
+export type ExerciseDecision =
+  | "increase"
+  | "maintain"
+  | "reduce"
+  | "technique"
+  | "volume";
+
+export type AiTrainingSignalsResponse = {
+  split: string;
+  fatigue: FatigueSignal;
+  volume_trend: VolumeTrend;
+  strategy: string;
+};
+
+export type AiInsightType =
+  | "progress"
+  | "fatigue"
+  | "balance"
+  | "risk"
+  | "opportunity";
+
+export type AiInsight = {
+  type: AiInsightType;
+  title: string;
+  text: string;
+};
+
+export type SuggestNextWorkoutAiExercise = {
+  name: string;
+  sets: SuggestedSet[];
+  /** Short coaching note; never empty after server normalize. */
+  reason: string;
+  decision: ExerciseDecision;
+  /** Short English label from the model (or defaults); UI may localize via `decision`. */
+  decision_label: string;
+};
+
+export type SuggestNextWorkoutAiDebug = {
+  lastWorkoutTitle: string;
+  performedAt?: string;
+  createdAt: string;
+  lastWorkoutSplit: string;
+  guardActive: boolean;
+  preferredNextSplits: string[];
+  splitSelection?: {
+    recommendedSplit: string;
+    candidates: { split: string; score: number }[];
+    reason: string;
+  };
+};
+
+export type SuggestNextWorkoutResponse = {
+  title: string;
+  /**
+   * One of: Normal progression, Volume focus, Intensity focus,
+   * Recovery session, Technique session.
+   */
+  session_type: string;
+  /** 0–100 from model + server blend after finalize. */
+  confidence: number;
+  reason: string;
+  training_signals: AiTrainingSignalsResponse;
+  /** At most 3 non-empty insight cards after finalize. */
+  insights: AiInsight[];
+  exercises: SuggestNextWorkoutAiExercise[];
+  warnings: string[];
+  /** Set in development: last-workout + split-guard context for this request. */
+  aiDebug?: SuggestNextWorkoutAiDebug;
+};
+
+export type SerializableWorkoutForAi = {
+  id: string;
+  date: string;
+  title: string;
+  createdAt: string;
+  /** When the session was done (if known); used for chronology / debugging. */
+  performedAt?: string;
+  durationMin?: number;
+  totalSets: number;
+  totalVolume: number;
+  exercises: {
+    name: string;
+    sets: { weight: number; reps: number; volume: number }[];
+  }[];
+};
+
+export type ExerciseHistoryItemForAi = {
+  name: string;
+  trend: ExerciseProgressionTrend;
+  stagnationSessions: number;
+  stimulusScore: number;
+  stimulusInterpretation: StimulusInterpretation;
+  stimulusBelowFiveLastThreeSessions: boolean;
+  recent: {
+    date: string;
+    topWeight: number;
+    topReps: number;
+    workingSets: number;
+    repDrop: number;
+    inSessionFatigue: boolean;
+  }[];
+};
+
+export type AiDecisionContext = {
+  recentWorkouts: SerializableWorkoutForAi[];
+  exerciseHistory: ExerciseHistoryItemForAi[];
+  fatigueSignals: TrainingSignals;
+  splitContinuityGuard: {
+    lastWorkoutSplit: "Push" | "Pull" | "Legs" | "Full" | "Unknown";
+    hoursSinceLastWorkout: number | null;
+    /** If false, avoid repeating last split unless user explicitly asks. */
+    allowSameSplit: boolean;
+    /** True when last split is known and repetition is discouraged. */
+    guardActive: boolean;
+    preferredNextSplits: ("Push" | "Pull" | "Legs" | "Full")[];
+    reasons: string[];
+    specializationModeEnabled: boolean;
+  };
+  muscleVolume: {
+    weeklyMuscleVolume: Record<PrimaryMuscleGroup, number>;
+    muscleVolumeTrend: Record<PrimaryMuscleGroup, VolumeTrend>;
+    muscleVolumeHistory?: MuscleVolumeHistoryEntry[];
+    muscleHypertrophyRanges: Partial<
+      Record<PrimaryMuscleGroup, { min: number; max: number }>
+    >;
+  };
+  laggingMuscles: {
+    muscleProgressScore: Record<PrimaryMuscleGroup, MuscleGroupAggregateTrend>;
+    laggingMuscleGroups: PrimaryMuscleGroup[];
+    stagnatingExercises: StagnationExerciseForAi[];
+    laggingInterventionBlockers: LaggingInterventionBlockers;
+    muscleProgressHistory: MuscleProgressHistoryEntry[];
+  };
+  progressionRecommendations: {
+    exerciseProgression: ExerciseProgressionForAi[];
+  };
+  periodizationState: PeriodizationForAi;
+  stimulusScores: {
+    name: string;
+    stimulusScore: number;
+    stimulusInterpretation: StimulusInterpretation;
+    stimulusBelowFiveLastThreeSessions: boolean;
+    stimulusComponents: StimulusComponents;
+  }[];
+  athleteProfile: Record<string, unknown>;
+  aiMode: AiCoachMode;
+  trainingSignals: TrainingSignalEngineOutput;
+  progressionPlan: ProgressionPlan;
+  trainingPhase: TrainingPhaseStateForAi;
+  volumePlan: AdaptiveVolumePlanForAi;
+  splitSelection?: SplitSelectionPlanForAi;
+};
+
+export type SplitSelectionCandidateForAi = {
+  split: "Push" | "Pull" | "Legs" | "Full";
+  score: number;
+  reasons: string[];
+};
+
+export type SplitSelectionPlanForAi = {
+  recommendedSplit: "Push" | "Pull" | "Legs" | "Full" | "Unknown";
+  candidates: SplitSelectionCandidateForAi[];
+  reason: string;
+};
+
+export type TrainingSignalExerciseTrend = {
+  exerciseName: string;
+  trend: ExerciseProgressionTrend;
+  lastBestSet: string;
+  previousBestSet?: string;
+  note: string;
+};
+
+export type TrainingSignalFatigueTrend = {
+  level: FatigueSignal;
+  reasons: string[];
+};
+
+export type TrainingSignalMuscleRecovery = {
+  muscleGroup: PrimaryMuscleGroup;
+  recoveryScore: number;
+  status: "ready" | "moderate" | "fatigued" | "unknown";
+  lastTrainedAt?: string;
+  weeklySets: number;
+  note: string;
+};
+
+export type TrainingSignalEngineOutput = {
+  exerciseTrends: TrainingSignalExerciseTrend[];
+  muscleRecovery: TrainingSignalMuscleRecovery[];
+  fatigueTrend: TrainingSignalFatigueTrend;
+  progressionFocus: "progress" | "maintain" | "reduce" | "deload" | "technique";
+  alerts: string[];
+};
+
+export type ProgressionPlanExercise = {
+  exerciseName: string;
+  action:
+    | "increase_reps"
+    | "increase_weight"
+    | "increase_sets"
+    | "maintain"
+    | "reduce_sets"
+    | "reduce_weight"
+    | "swap_exercise";
+  reason: string;
+  target?: string;
+};
+
+export type ProgressionPlan = {
+  globalStrategy: "progress" | "maintain" | "reduce" | "deload" | "technique";
+  exercisePlans: ProgressionPlanExercise[];
+};
+
+export type TrainingPhaseStateForAi = {
+  phase: "build" | "consolidate" | "deload" | "unknown";
+  weekInPhase: number;
+  reason: string;
+  fatigueIndicator: "low" | "moderate" | "high" | "unknown";
+  volumeIndicator: "low" | "moderate" | "high";
+};
+
+export type AdaptiveVolumePlanMuscleRow = {
+  muscleGroup: string;
+  weeklySets: number;
+  recommendedRange: [number, number];
+  status: "low" | "optimal" | "high";
+  action: "increase" | "maintain" | "reduce";
+};
+
+export type AdaptiveVolumePlanForAi = {
+  muscleVolume: AdaptiveVolumePlanMuscleRow[];
+};
+
+export type AiCoachExerciseStat = {
+  name: string;
+  sessionsInHistory: number;
+  bestSet?: { weight: number; reps: number; volume: number };
+  lastPerformedDate?: string;
+};
+
+/**
+ * Letter grade for a finished session. Model must align with `score` (see AI prompt).
+ */
+export type WorkoutReviewGrade = "A+" | "A" | "B+" | "B" | "C" | "D";
+
+/** Response from POST /api/ai-coach/review-workout; also stored on WorkoutSession.aiReview. */
+export type WorkoutAiReview = {
+  /**
+   * Session quality 0–100. Omitted in older stored reviews.
+   * Bands: 90+ excellent, 80–89 strong, 70–79 good/needs attention, 60–69 mixed, under 60 poor/recovery.
+   */
+  score?: number;
+  grade?: WorkoutReviewGrade;
+  /** Short headline; language matches UI. */
+  verdict?: string;
+  /** Longer 2–3 sentence recap; when `verdict` is set, UI may show verdict only. */
+  summary: string;
+  went_well: string[];
+  needs_attention: string[];
+  next_time: string[];
+  exercise_notes: { name: string; note: string }[];
+};
+
+/**
+ * Input for the review API: the session just completed, older sessions, and stats.
+ * Payload is built client-side from Dexie and sent to the server.
+ */
+export type WorkoutReviewRequestPayload = {
+  /** UI language: all coach copy (summary, bullets, note text) must match. `"en"` or `"ru"`. */
+  language?: AppLanguage;
+  /** Same shape as suggest-next; only defined fields. */
+  athleteProfile: Record<string, unknown>;
+  completedSession: {
+    id: string;
+    date: string;
+    title: string;
+    durationMin?: number;
+    totalVolume: number;
+    totalSets: number;
+    exercises: {
+      name: string;
+      sets: {
+        weight: number;
+        reps: number;
+        volume: number;
+        isDone?: boolean;
+        completedAt?: string;
+      }[];
+    }[];
+  };
+  /** 3–5 prior sessions, newest of those first (immediately after completed in the log). */
+  priorSessions: SerializableWorkoutForAi[];
+  exerciseStats: AiCoachExerciseStat[];
+  logTotals: { totalVolume: number; totalSetCount: number };
+};
+
+export type ExerciseBaselineForAi = {
+  name: string;
+  latestSets: { weight: number; reps: number; volume: number }[];
+  bestSet: { weight: number; reps: number; volume: number } | null;
+  lastSessionVolume: number;
+};
+
+export type TrainingSignals = {
+  recentSplitPattern: string[];
+  lastWorkedMuscleGroups: string[];
+  volumeTrend: VolumeTrend;
+  fatigueSignal: FatigueSignal;
+  exerciseBaselines: ExerciseBaselineForAi[];
+};
+
+/** 7-day bucket in user timezone (for `muscleVolumeHistory`, future charts). */
+export type MuscleVolumeHistoryEntry = {
+  periodStart: string;
+  periodEnd: string;
+  setsByMuscle: Record<PrimaryMuscleGroup, number>;
+};
+
+/** Default + optional user overrides from Settings; no implicit post-cycle context. */
+export type AiTrainingContextPayload = {
+  trainingPhase: string;
+  goal: string;
+  progressionMode: "progressive overload";
+  userNotesFromSettings?: string;
+  offCycleDate?: string;
+};
+
+/** Next-workout AI style: follow log closely vs. balanced coach programming. */
+export type AiCoachMode = "history_based" | "coach_recommended";
+
+/** Heuristic from history (3–5 sessions) for one exercise. */
+export type ExerciseProgressionTrend =
+  | "improving"
+  | "stable"
+  | "stagnating"
+  | "declining"
+  | "unknown";
+
+/**
+ * Rolled up from per-exercise `exerciseProgression` (same 3× flat top = stagnating rules as engine).
+ */
+export type MuscleGroupAggregateTrend =
+  | "improving"
+  | "stable"
+  | "stagnating"
+  | "declining"
+  | "mixed"
+  | "unknown";
+
+/**
+ * One snapshot for `muscleProgressHistory` (future time series / UI).
+ */
+export type MuscleProgressHistoryEntry = {
+  asOf: string;
+  muscleProgressScore: Record<PrimaryMuscleGroup, MuscleGroupAggregateTrend>;
+  laggingMuscleGroups: PrimaryMuscleGroup[];
+};
+
+export type StagnationExerciseForAi = {
+  name: string;
+  primaryMuscle: PrimaryMuscleGroup;
+  trend: ExerciseProgressionTrend;
+  stagnationSessions: number;
+  topWeight: number;
+  topReps: number;
+};
+
+export type LaggingInterventionBlockers = {
+  highFatigue: boolean;
+  musclesAtWeeklyVolumeMax: PrimaryMuscleGroup[];
+};
+
+/** Future: user setting; not stored in Dexie yet. */
+export type TrainingCycleTypePreference = "strength" | "hypertrophy" | "mixed";
+
+/**
+ * 4×4 session-based microcycle: every 4 completed sessions advances one “training week”;
+ * after 16 sessions the pattern repeats. `effectivePhase` may be **deload** early if `forcedDeload`.
+ */
+export type PeriodizationForAi = {
+  trainingCycleWeek: 1 | 2 | 3 | 4;
+  /** 0–15 within the 16-workout macrocycle (for the next planned session). */
+  workoutIndexInCycle: number;
+  /** 0–3 within the current 4-workout “training week”. */
+  workoutPositionInTrainingWeek: 0 | 1 | 2 | 3;
+  totalSessionsLogged: number;
+  scheduledPhase: "moderate" | "progression" | "peak" | "deload";
+  effectivePhase: "moderate" | "progression" | "peak" | "deload";
+  forcedDeload: boolean;
+  /** Target working-set count vs typical; about 0.65 in deload. */
+  deloadSetVolumeMultiplierTarget: number;
+  cycleTypePreference: TrainingCycleTypePreference;
+};
+
+export type StimulusInterpretation =
+  | "strong"
+  | "acceptable"
+  | "weak"
+  | "poor"
+  | "unknown";
+
+export type StimulusComponents = {
+  progressScore: number;
+  repConsistency: number;
+  volumeScore: number;
+  fatiguePenalty: number;
+  /** progress + repConsistency + volumeScore + fatiguePenalty (pre-clamp). */
+  rawSum: number;
+};
+
+/** Progression engine output before stimulus merge. */
+export type ExerciseProgressionForAiBase = {
+  name: string;
+  repTargetRange: { min: number; max: number };
+  history: {
+    date: string;
+    sessionId: string;
+    topWeight: number;
+    topReps: number;
+    workingVolume: number;
+    inRepTargetWorkingSets: number;
+    inSessionRepDrop: number;
+    inSessionFatigue: boolean;
+  }[];
+  trend: ExerciseProgressionTrend;
+  stagnationSessions: number;
+  fatigueDetected: boolean;
+  volumeFalling3Sessions: boolean;
+  hint: string;
+};
+
+/**
+ * One exercise row from the progression engine + stimulus (oldest `history` first).
+ * Stimulus is merged in `enrichProgressionWithStimulus`. Not stored in Dexie.
+ */
+export type ExerciseProgressionForAi = ExerciseProgressionForAiBase & {
+  /** 0–10; from last 3–5 sessions. */
+  stimulusScore: number;
+  stimulusComponents: StimulusComponents;
+  stimulusInterpretation: StimulusInterpretation;
+  /** All three of the last 3 per-session 0–10 sub-scores were under 5. */
+  stimulusBelowFiveLastThreeSessions: boolean;
+};
+
+export type AiCoachRequestPayload = {
+  /** UI language: model must answer user-facing strings in this language. */
+  language: AppLanguage;
+  /** How the model balances fidelity to the log vs. program design. */
+  aiMode: AiCoachMode;
+  /** Onboarding / profile fields (only set keys are sent). */
+  athleteProfile: Record<string, unknown>;
+  /** Newest first, at most 5 */
+  recentSessions: SerializableWorkoutForAi[];
+  /** All logged sessions (lifetime totals) */
+  logTotals: { totalVolume: number; totalSetCount: number };
+  /** Most recently used exercise names, newest-first, deduplicated */
+  mostRecentExercises: string[];
+  exerciseStats: AiCoachExerciseStat[];
+  favorites: { name: string; muscleGroup?: string; equipment?: string }[];
+  settings: {
+    defaultRestSec?: number;
+    planningStyle?: string;
+    preferredActionTypes?: string[];
+    timezone: string;
+  };
+  trainingContext: AiTrainingContextPayload;
+  trainingSignals: TrainingSignals;
+  /** Per-exercise progression (warm-ups stripped, rep-target band, trend). */
+  exerciseProgression: ExerciseProgressionForAi[];
+  /**
+   * Rolling 7-day working-set counts per primary muscle (user timezone).
+   * Used with `muscleHypertrophyRanges` and `muscleVolumeTrend` to adjust set counts.
+   */
+  weeklyMuscleVolume: Record<PrimaryMuscleGroup, number>;
+  /** vs the prior 7-day window. */
+  muscleVolumeTrend: Record<PrimaryMuscleGroup, VolumeTrend>;
+  /** Four non-overlapping 7-day buckets, oldest first (for future charts). */
+  muscleVolumeHistory: MuscleVolumeHistoryEntry[];
+  /** Hypertrophy set/week bands; if weekly at or above `max`, do not add working sets for that muscle. */
+  muscleHypertrophyRanges: Partial<
+    Record<PrimaryMuscleGroup, { min: number; max: number }>
+  >;
+  /**
+   * Rolled from `exerciseProgression` + catalog muscle mapping. Computed after volume, before the model.
+   */
+  muscleProgressScore: Record<PrimaryMuscleGroup, MuscleGroupAggregateTrend>;
+  /** Subset of muscles to prioritize (stagnation/decline vs others). */
+  laggingMuscleGroups: PrimaryMuscleGroup[];
+  stagnatingExercises: StagnationExerciseForAi[];
+  laggingInterventionBlockers: LaggingInterventionBlockers;
+  /** Point-in-time snapshot(s) for future analytics / charts. */
+  muscleProgressHistory: MuscleProgressHistoryEntry[];
+  /** 4-week session-based intensity block; after lagging, before model. */
+  periodization: PeriodizationForAi;
+  /** Unified analysis pipeline summary (primary source of truth for the model). */
+  aiDecisionContext: AiDecisionContext;
+  quickTemplates: { id: string; label: string; muscleLine: string; exercises: string[] }[];
+};
