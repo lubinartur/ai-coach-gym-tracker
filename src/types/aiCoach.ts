@@ -1,10 +1,55 @@
 import type { AppLanguage } from "@/i18n/language";
 import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import type { AthleteProfile } from "./athleteProfile";
+import type { UserSettings } from "./index";
+import type { Exercise, WorkoutSession } from "./trainingDiary";
 
 export type SuggestedSet = { weight: number; reps: number };
 
 export type VolumeTrend = "up" | "down" | "stable" | "unknown";
 export type FatigueSignal = "high" | "moderate" | "low" | "unknown";
+
+export type ExerciseBaselineForAi = {
+  name: string;
+  latestSets: { weight: number; reps: number; volume: number }[];
+  bestSet: { weight: number; reps: number; volume: number } | null;
+  lastSessionVolume: number;
+};
+
+/**
+ * **Session-level summary** (from `computeTrainingSignals` in `services/trainingSignals.ts`):
+ * recent title pattern, `lastWorkedMuscleGroups`, session volume trend, session-level `fatigueSignal`
+ * (from last workout’s set count heuristics), and per-exercise baselines. This is the lighter layer.
+ *
+ * On the API wire: `AiCoachRequestPayload["trainingSignals"]` and, in `history_based` mode,
+ * `AiDecisionContext.fatigueSignals` (same object as the payload’s `trainingSignals` for that build).
+ */
+export type TrainingSignals = {
+  recentSplitPattern: string[];
+  lastWorkedMuscleGroups: string[];
+  volumeTrend: VolumeTrend;
+  fatigueSignal: FatigueSignal;
+  exerciseBaselines: ExerciseBaselineForAi[];
+};
+
+/** Same struct as `TrainingSignals` — use this name at call sites to mean “session summary”, not the engine. */
+export type SessionSummarySignals = TrainingSignals;
+
+/**
+ * One Dexie read of coach inputs for a single suggest-next build.
+ * `sortedSessions` uses the same chronology order as the AI decision pipeline
+ * (newest first: performedAt, else createdAt / date).
+ * `sessionLevelTrainingSignals` is the single `computeTrainingSignals(sortedSessions, catalog)` result
+ * (payload `trainingSignals` and, in history_based mode, `aiDecisionContext.fatigueSignals`).
+ */
+export type AiCoachDataSnapshot = {
+  sessions: WorkoutSession[];
+  sortedSessions: WorkoutSession[];
+  catalog: Exercise[];
+  settings: UserSettings;
+  athlete: AthleteProfile;
+  sessionLevelTrainingSignals: SessionSummarySignals;
+};
 
 export type ExerciseDecision =
   | "increase"
@@ -44,6 +89,17 @@ export type SuggestNextWorkoutAiExercise = {
 };
 
 export type SuggestNextWorkoutAiDebug = {
+  mode?: "history" | "coach";
+  generationSource?: "adaptive_history" | "coach_skeleton";
+  /** Set when insight pipeline runs (typically development builds). */
+  insightSource?: "llm" | "fallback";
+  /** Validation / quality notes for the insight step. */
+  insightWarnings?: string[];
+  /** Development-only: engine decision trace for this generation. */
+  decisionTrace?: {
+    traceId: string;
+    entries: import("@/types/decisionTrace").DecisionTraceEntry[];
+  };
   lastWorkoutTitle: string;
   performedAt?: string;
   createdAt: string;
@@ -72,6 +128,16 @@ export type SuggestNextWorkoutResponse = {
   insights: AiInsight[];
   exercises: SuggestNextWorkoutAiExercise[];
   warnings: string[];
+  recoverySummary?: Array<{
+    muscle: string;
+    status: "ready" | "recovering" | "fatigued" | "unknown";
+    score?: number;
+  }>;
+  volumeSummary?: Array<{
+    muscle: string;
+    status: "low" | "optimal" | "high" | "unknown";
+    sets?: number;
+  }>;
   /** Set in development: last-workout + split-guard context for this request. */
   aiDebug?: SuggestNextWorkoutAiDebug;
 };
@@ -112,6 +178,7 @@ export type ExerciseHistoryItemForAi = {
 export type AiDecisionContext = {
   recentWorkouts: SerializableWorkoutForAi[];
   exerciseHistory: ExerciseHistoryItemForAi[];
+  /** Session summary (`SessionSummarySignals` / `computeTrainingSignals`); mirrors payload `trainingSignals` in `history_based`. */
   fatigueSignals: TrainingSignals;
   splitContinuityGuard: {
     lastWorkoutSplit: "Push" | "Pull" | "Legs" | "Full" | "Unknown";
@@ -152,6 +219,7 @@ export type AiDecisionContext = {
   }[];
   athleteProfile: Record<string, unknown>;
   aiMode: AiCoachMode;
+  /** Coaching engine (`CoachingContextSignals` / `buildTrainingSignals`); not the session summary. */
   trainingSignals: TrainingSignalEngineOutput;
   progressionPlan: ProgressionPlan;
   trainingPhase: TrainingPhaseStateForAi;
@@ -193,6 +261,13 @@ export type TrainingSignalMuscleRecovery = {
   note: string;
 };
 
+/**
+ * **Coaching-context engine** output (from `buildTrainingSignals` in `services/trainingSignalEngine.ts`):
+ * per-exercise trend lines, per-muscle recovery rows, derived `fatigueTrend`, `progressionFocus`, and `alerts`.
+ * Feeds progression planner, phase, and split selection. Not the same as `TrainingSignals` / session summary.
+ *
+ * On the API wire: `AiDecisionContext["trainingSignals"]` only (field name is historical; value is this shape).
+ */
 export type TrainingSignalEngineOutput = {
   exerciseTrends: TrainingSignalExerciseTrend[];
   muscleRecovery: TrainingSignalMuscleRecovery[];
@@ -200,6 +275,9 @@ export type TrainingSignalEngineOutput = {
   progressionFocus: "progress" | "maintain" | "reduce" | "deload" | "technique";
   alerts: string[];
 };
+
+/** Same struct as `TrainingSignalEngineOutput` — clarifies “engine layer” at call sites. */
+export type CoachingContextSignals = TrainingSignalEngineOutput;
 
 export type ProgressionPlanExercise = {
   exerciseName: string;
@@ -301,21 +379,6 @@ export type WorkoutReviewRequestPayload = {
   priorSessions: SerializableWorkoutForAi[];
   exerciseStats: AiCoachExerciseStat[];
   logTotals: { totalVolume: number; totalSetCount: number };
-};
-
-export type ExerciseBaselineForAi = {
-  name: string;
-  latestSets: { weight: number; reps: number; volume: number }[];
-  bestSet: { weight: number; reps: number; volume: number } | null;
-  lastSessionVolume: number;
-};
-
-export type TrainingSignals = {
-  recentSplitPattern: string[];
-  lastWorkedMuscleGroups: string[];
-  volumeTrend: VolumeTrend;
-  fatigueSignal: FatigueSignal;
-  exerciseBaselines: ExerciseBaselineForAi[];
 };
 
 /** 7-day bucket in user timezone (for `muscleVolumeHistory`, future charts). */
@@ -473,6 +536,7 @@ export type AiCoachRequestPayload = {
     timezone: string;
   };
   trainingContext: AiTrainingContextPayload;
+  /** Session summary (`SessionSummarySignals` / `computeTrainingSignals`); not `aiDecisionContext.trainingSignals`. */
   trainingSignals: TrainingSignals;
   /** Per-exercise progression (warm-ups stripped, rep-target band, trend). */
   exerciseProgression: ExerciseProgressionForAi[];

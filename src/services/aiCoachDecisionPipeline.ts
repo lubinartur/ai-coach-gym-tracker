@@ -1,20 +1,20 @@
-import { getOrCreateAthleteProfile } from "@/db/athleteProfile";
-import { listExercises } from "@/db/exercises";
-import { getOrCreateSettings } from "@/db/settings";
-import { listWorkoutSessions } from "@/db/workoutSessions";
 import { enrichProgressionWithStimulus } from "@/lib/exerciseStimulusScore";
 import { buildLaggingMuscleAnalysisForPayload } from "@/lib/laggingMuscleAnalysis";
 import { buildMuscleVolumeAnalysisForPayload } from "@/lib/muscleVolumeAnalysis";
 import { buildPeriodizationForPayload } from "@/lib/periodizationEngine";
 import { buildExerciseProgressionForAi } from "@/lib/progressionEngine";
 import { serializeAthleteProfileForAi } from "@/lib/serializeAthleteForAi";
-import { computeTrainingSignals } from "@/services/trainingSignals";
 import { buildTrainingSignals } from "@/services/trainingSignalEngine";
 import { buildProgressionPlan } from "@/services/progressionPlanner";
 import { buildTrainingPhaseState } from "@/services/trainingPhaseEngine";
 import { buildAdaptiveVolumePlan } from "@/services/adaptiveVolumeEngine";
 import { buildSplitSelectionPlan } from "@/services/splitSelectionEngine";
-import type { AiCoachMode, AiDecisionContext, ExerciseHistoryItemForAi } from "@/types/aiCoach";
+import type {
+  AiCoachDataSnapshot,
+  AiCoachMode,
+  AiDecisionContext,
+  ExerciseHistoryItemForAi,
+} from "@/types/aiCoach";
 import { serializeWorkoutForAi } from "@/services/aiCoachContext";
 import { getWorkoutChronologyTime } from "@/lib/workoutChronology";
 import {
@@ -23,6 +23,9 @@ import {
   type WorkoutSplitLabel,
 } from "@/lib/workoutSplitInference";
 import type { WorkoutSession } from "@/types/trainingDiary";
+import { EMPTY_LAGGING_MUSCLE_BLOCK } from "@/lib/laggingMuscleAnalysis";
+import { EMPTY_MUSCLE_VOLUME_BLOCK } from "@/lib/muscleVolumeAnalysis";
+import { EMPTY_PERIODIZATION } from "@/lib/periodizationEngine";
 
 const MAX_RECENT_WORKOUTS = 5;
 const MAX_EXERCISE_HISTORY = 24;
@@ -67,27 +70,19 @@ function slimExerciseHistoryFromProgression(rows: {
  * Unified AI Coach decision pipeline.
  *
  * Notes:
- * - Uses the same `workoutSessions` source (Dexie) for every derived signal.
+ * - Expects a single `AiCoachDataSnapshot` from one Dexie read (see `buildAiCoachRequestPayload`).
  * - Does not modify workout logging or any Dexie schema.
  * - Keeps derived signals separate from raw-ish history.
  */
 export async function buildAiCoachDecisionContext(
-  options: { aiMode?: AiCoachMode } = {},
+  options: { aiMode?: AiCoachMode; snapshot: AiCoachDataSnapshot },
 ): Promise<AiDecisionContext> {
   const aiMode: AiCoachMode = options.aiMode ?? "history_based";
-
-  // 1) recent workouts (raw source)
-  const [workoutSessions, catalog, settings, athlete] = await Promise.all([
-    listWorkoutSessions(),
-    listExercises(),
-    getOrCreateSettings(),
-    getOrCreateAthleteProfile(),
-  ]);
+  const { catalog, settings, athlete, sortedSessions, sessionLevelTrainingSignals } =
+    options.snapshot;
 
   // Newest session first: real workout time (performedAt) when set, else createdAt / date.
-  const sortedSessions = [...workoutSessions].sort(
-    (a, b) => getWorkoutChronologyTime(b) - getWorkoutChronologyTime(a),
-  );
+  // (Caller builds `snapshot.sortedSessions` with the same sort as this module used previously.)
 
   // Deleted workouts are not included by `listWorkoutSessions()` (Dexie query only returns persisted rows).
   const recentWorkouts = sortedSessions
@@ -118,8 +113,56 @@ export async function buildAiCoachDecisionContext(
     specializationModeEnabled,
   };
 
-  // 2) exercise history (via progression engine input), 3) fatigue detection
-  const fatigueSignals = computeTrainingSignals(sortedSessions, catalog);
+  // Coach mode: keep the experience template-driven and lightweight.
+  // Skip heavy analysis engines (muscle volume, lagging muscles, periodization).
+  if (aiMode === "coach_recommended") {
+    const athleteProfile = serializeAthleteProfileForAi(athlete);
+    return {
+      recentWorkouts,
+      exerciseHistory: [],
+      fatigueSignals: {
+        recentSplitPattern: [],
+        lastWorkedMuscleGroups: [],
+        volumeTrend: "unknown",
+        fatigueSignal: "unknown",
+        exerciseBaselines: [],
+      },
+      splitContinuityGuard,
+      muscleVolume: {
+        weeklyMuscleVolume: { ...EMPTY_MUSCLE_VOLUME_BLOCK.weeklyMuscleVolume },
+        muscleVolumeTrend: { ...EMPTY_MUSCLE_VOLUME_BLOCK.muscleVolumeTrend },
+        muscleVolumeHistory: [],
+        muscleHypertrophyRanges: { ...EMPTY_MUSCLE_VOLUME_BLOCK.muscleHypertrophyRanges },
+      },
+      laggingMuscles: { ...EMPTY_LAGGING_MUSCLE_BLOCK },
+      progressionRecommendations: { exerciseProgression: [] },
+      periodizationState: { ...EMPTY_PERIODIZATION },
+      stimulusScores: [],
+      athleteProfile,
+      aiMode,
+      trainingSignals: {
+        exerciseTrends: [],
+        muscleRecovery: [],
+        fatigueTrend: { level: "unknown", reasons: [] },
+        progressionFocus: "maintain",
+        alerts: [],
+      },
+      progressionPlan: { globalStrategy: "maintain", exercisePlans: [] },
+      trainingPhase: {
+        phase: "unknown",
+        weekInPhase: 0,
+        reason: "",
+        fatigueIndicator: "unknown",
+        volumeIndicator: "low",
+      },
+      volumePlan: { muscleVolume: [] },
+      splitSelection: undefined,
+    };
+  }
+
+  // 2) exercise history (via progression engine input), 3) session-level training signals
+  // (precomputed in `buildAiCoachRequestPayload`; same object as top-level `trainingSignals`).
+  const fatigueSignals = sessionLevelTrainingSignals;
 
   // 4) muscle volume tracker
   const muscleVolume = buildMuscleVolumeAnalysisForPayload(
@@ -162,8 +205,8 @@ export async function buildAiCoachDecisionContext(
     fatigueSignals.fatigueSignal,
   );
 
-  // 8) training signal engine (deeper context)
-  const trainingSignals = buildTrainingSignals({
+  // 8) coaching-context signal engine (trends, recovery, alerts — not session summary)
+  const coachingContextSignals = buildTrainingSignals({
     workoutSessions: sortedSessions,
     catalog,
     timeZone: settings.timezone,
@@ -177,12 +220,12 @@ export async function buildAiCoachDecisionContext(
   });
 
   // 9) progression planner (one-variable per exercise strategy)
-  const progressionPlan = buildProgressionPlan(trainingSignals);
+  const progressionPlan = buildProgressionPlan(coachingContextSignals);
 
   // 10) training phase engine (build / consolidate / deload)
   const trainingPhase = buildTrainingPhaseState({
     workoutSessions: sortedSessions,
-    trainingSignals,
+    coachingContextSignals,
     progressionPlan,
   });
 
@@ -194,7 +237,7 @@ export async function buildAiCoachDecisionContext(
   // 12) split selection engine (choose best among allowed next splits)
   const splitSelection = buildSplitSelectionPlan({
     preferredNextSplits: splitContinuityGuard.preferredNextSplits,
-    muscleRecovery: trainingSignals.muscleRecovery,
+    muscleRecovery: coachingContextSignals.muscleRecovery,
     volumePlan,
     laggingMuscles,
     fatigueSignals,
@@ -229,7 +272,7 @@ export async function buildAiCoachDecisionContext(
     stimulusScores,
     athleteProfile,
     aiMode,
-    trainingSignals,
+    trainingSignals: coachingContextSignals,
     progressionPlan,
     trainingPhase,
     volumePlan,
@@ -262,7 +305,8 @@ export async function buildAiCoachDecisionContext(
       ctx.progressionRecommendations.exerciseProgression.slice(0, 8),
     );
     console.log("[aiCoachDecisionContext] splitContinuityGuard", ctx.splitContinuityGuard);
-    console.log("[aiCoachDecisionContext] trainingSignals", {
+    // Field name `trainingSignals` is historical; value is coaching-engine output, not session summary.
+    console.log("[aiCoachDecisionContext] trainingSignals (coaching engine)", {
       fatigueTrend: ctx.trainingSignals.fatigueTrend,
       progressionFocus: ctx.trainingSignals.progressionFocus,
       alerts: ctx.trainingSignals.alerts,

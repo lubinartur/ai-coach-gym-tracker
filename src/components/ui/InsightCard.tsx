@@ -25,19 +25,24 @@ type Props = {
   body?: ReactNode;
   tone?: InsightTone;
   tag?: ReactNode;
+  compact?: boolean;
   className?: string;
 };
 
-export function InsightCard({ title, body, tone = "neutral", tag, className = "" }: Props) {
+export function InsightCard({ title, body, tone = "neutral", tag, compact = false, className = "" }: Props) {
   const { wrap, tag: tagTone } = panelClass(tone);
   return (
-    <Card className={"!p-5 " + wrap + " " + className}>
+    <Card className={(compact ? "!p-4 " : "!p-5 ") + wrap + " " + className}>
       <div className="flex items-start justify-between gap-3">
-        <p className="text-base font-semibold leading-snug text-neutral-50">{title}</p>
+        <p className={(compact ? "text-sm " : "text-base ") + "font-semibold leading-snug text-neutral-50 line-clamp-1"}>
+          {title}
+        </p>
         {tag ? <Tag tone={tagTone}>{tag}</Tag> : null}
       </div>
       {body ? (
-        <p className="mt-1 text-sm leading-snug text-neutral-400">{body}</p>
+        <p className={(compact ? "mt-1 text-xs " : "mt-1 text-sm ") + "leading-snug text-neutral-400 line-clamp-2"}>
+          {body}
+        </p>
       ) : null}
     </Card>
   );

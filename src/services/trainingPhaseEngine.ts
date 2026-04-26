@@ -1,15 +1,10 @@
+import { cap } from "@/lib/string/cap";
 import type {
+  CoachingContextSignals,
   ProgressionPlan,
   TrainingPhaseStateForAi,
-  TrainingSignalEngineOutput,
 } from "@/types/aiCoach";
 import type { WorkoutSession } from "@/types/trainingDiary";
-
-function cap(s: string, n: number): string {
-  const t = s.trim();
-  if (t.length <= n) return t;
-  return `${t.slice(0, n - 1).trimEnd()}…`;
-}
 
 function clampInt(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(n)));
@@ -43,10 +38,10 @@ function volumeIndicatorFromRecent(workouts: WorkoutSession[]): "low" | "moderat
 }
 
 function classifyPhaseNow(input: {
-  trainingSignals: TrainingSignalEngineOutput;
+  coachingContextSignals: CoachingContextSignals;
   progressionPlan: ProgressionPlan;
 }): { phase: TrainingPhaseStateForAi["phase"]; reason: string } {
-  const ts = input.trainingSignals;
+  const ts = input.coachingContextSignals;
   const gp = input.progressionPlan.globalStrategy;
   const fatigue = ts.fatigueTrend.level;
   const alerts = ts.alerts.join(" ").toLowerCase();
@@ -100,11 +95,11 @@ function estimateWeekInPhase(workoutsInStreak: number): number {
  */
 export function buildTrainingPhaseState(input: {
   workoutSessions: WorkoutSession[];
-  trainingSignals: TrainingSignalEngineOutput;
+  coachingContextSignals: CoachingContextSignals;
   progressionPlan: ProgressionPlan;
 }): TrainingPhaseStateForAi {
   const { phase, reason } = classifyPhaseNow({
-    trainingSignals: input.trainingSignals,
+    coachingContextSignals: input.coachingContextSignals,
     progressionPlan: input.progressionPlan,
   });
 
@@ -117,7 +112,7 @@ export function buildTrainingPhaseState(input: {
     phase,
     weekInPhase: estimateWeekInPhase(streakWorkouts),
     reason: cap(reason, 140),
-    fatigueIndicator: input.trainingSignals.fatigueTrend.level,
+    fatigueIndicator: input.coachingContextSignals.fatigueTrend.level,
     volumeIndicator: volumeIndicatorFromRecent(input.workoutSessions),
   };
 }

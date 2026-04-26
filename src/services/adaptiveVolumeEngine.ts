@@ -1,29 +1,35 @@
+import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import { MUSCLE_HYPERTROPHY_SETS_PER_WEEK } from "@/lib/muscleVolumeAnalysis";
 import type { AdaptiveVolumePlanForAi, AdaptiveVolumePlanMuscleRow } from "@/types/aiCoach";
-const MUSCLES = [
+
+/**
+ * Weekly set bands for the adaptive volume plan use `MUSCLE_HYPERTROPHY_SETS_PER_WEEK` in
+ * `muscleVolumeAnalysis` — the single source of truth for AI Coach min/max working sets per
+ * week (hypertrophy-oriented; not medical advice). Do not duplicate range tables here.
+ */
+const VOLUME_PLAN_MUSCLES: PrimaryMuscleGroup[] = [
   "chest",
   "back",
   "shoulders",
   "legs",
   "biceps",
   "triceps",
+  "hamstrings",
+  "calves",
+  "forearms",
   "core",
-] as const;
-
-export const ADAPTIVE_VOLUME_RANGES: Record<(typeof MUSCLES)[number], { min: number; max: number }> = {
-  chest: { min: 10, max: 20 },
-  back: { min: 12, max: 22 },
-  shoulders: { min: 10, max: 18 },
-  legs: { min: 12, max: 20 },
-  biceps: { min: 8, max: 16 },
-  triceps: { min: 8, max: 16 },
-  core: { min: 6, max: 14 },
-};
+];
 
 function rowFor(
-  muscleGroup: (typeof MUSCLES)[number],
+  muscleGroup: PrimaryMuscleGroup,
   weeklySets: number,
 ): AdaptiveVolumePlanMuscleRow {
-  const r = ADAPTIVE_VOLUME_RANGES[muscleGroup];
+  const r = MUSCLE_HYPERTROPHY_SETS_PER_WEEK[muscleGroup];
+  if (!r) {
+    throw new Error(
+      `adaptiveVolumeEngine: missing MUSCLE_HYPERTROPHY_SETS_PER_WEEK for ${muscleGroup}`,
+    );
+  }
   if (weeklySets < r.min) {
     return {
       muscleGroup,
@@ -54,9 +60,11 @@ function rowFor(
 export function buildAdaptiveVolumePlan(input: {
   weeklyMuscleVolume: Record<string, number>;
 }): AdaptiveVolumePlanForAi {
-  const muscleVolume: AdaptiveVolumePlanMuscleRow[] = MUSCLES.map((m) =>
-    rowFor(m, Math.max(0, Math.round((input.weeklyMuscleVolume[m] ?? 0) * 10) / 10)),
+  const muscleVolume: AdaptiveVolumePlanMuscleRow[] = VOLUME_PLAN_MUSCLES.map((m) =>
+    rowFor(
+      m,
+      Math.max(0, Math.round((input.weeklyMuscleVolume[m] ?? 0) * 10) / 10),
+    ),
   );
   return { muscleVolume };
 }
-

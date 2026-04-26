@@ -3,6 +3,7 @@ import { listExercises } from "@/db/exercises";
 import { getOrCreateSettings } from "@/db/settings";
 import { parseAppLanguage } from "@/i18n/language";
 import { listWorkoutSessions } from "@/db/workoutSessions";
+import { getWorkoutChronologyTime } from "@/lib/workoutChronology";
 import { serializeAthleteProfileForAi } from "@/lib/serializeAthleteForAi";
 import { normalizeExerciseName } from "@/lib/exerciseName";
 import { QUICK_WORKOUT_TEMPLATES } from "@/lib/workoutQuickTemplates";
@@ -12,6 +13,7 @@ import {
 } from "@/services/trainingSignals";
 import { buildAiCoachDecisionContext } from "@/services/aiCoachDecisionPipeline";
 import type {
+  AiCoachDataSnapshot,
   AiCoachExerciseStat,
   AiCoachMode,
   AiCoachRequestPayload,
@@ -147,18 +149,36 @@ export async function buildAiCoachRequestPayload(
   options: BuildAiCoachRequestOptions = {},
 ): Promise<AiCoachRequestPayload> {
   const aiMode: AiCoachMode = options.aiMode ?? "history_based";
-  const [rows, catalog, settings, athlete] = await Promise.all([
+  const [sessions, catalog, settings, athlete] = await Promise.all([
     listWorkoutSessions(),
     listExercises(),
     getOrCreateSettings(),
     getOrCreateAthleteProfile(),
   ]);
 
-  const recentSessions = rows
+  const sortedSessions = [...sessions].sort(
+    (a, b) => getWorkoutChronologyTime(b) - getWorkoutChronologyTime(a),
+  );
+
+  const sessionLevelTrainingSignals = computeTrainingSignals(
+    sortedSessions,
+    catalog,
+  );
+
+  const snapshot: AiCoachDataSnapshot = {
+    sessions,
+    sortedSessions,
+    catalog,
+    settings,
+    athlete,
+    sessionLevelTrainingSignals,
+  };
+
+  const recentSessions = sortedSessions
     .slice(0, MAX_SESSIONS)
     .map(serializeWorkoutForAi);
 
-  const logTotals = rows.reduce(
+  const logTotals = sortedSessions.reduce(
     (acc, s) => {
       acc.totalVolume += s.totalVolume;
       acc.totalSetCount += s.totalSets;
@@ -167,7 +187,7 @@ export async function buildAiCoachRequestPayload(
     { totalVolume: 0, totalSetCount: 0 },
   );
 
-  const sessionSlice = rows.slice(0, MAX_SESSIONS);
+  const sessionSlice = sortedSessions.slice(0, MAX_SESSIONS);
   const favKeys = new Set(
     catalog
       .filter((e) => e.isFavorite)
@@ -194,9 +214,12 @@ export async function buildAiCoachRequestPayload(
   }));
 
   const trainingContext = buildAiTrainingContext(athlete);
-  const trainingSignals = computeTrainingSignals(rows, catalog);
+  const sessionSummarySignals = sessionLevelTrainingSignals;
 
-  const aiDecisionContext = await buildAiCoachDecisionContext({ aiMode });
+  const aiDecisionContext = await buildAiCoachDecisionContext({
+    aiMode,
+    snapshot,
+  });
 
   return {
     language: parseAppLanguage(settings.language),
@@ -214,7 +237,7 @@ export async function buildAiCoachRequestPayload(
       timezone: settings.timezone,
     },
     trainingContext,
-    trainingSignals,
+    trainingSignals: sessionSummarySignals,
     exerciseProgression: aiDecisionContext.progressionRecommendations.exerciseProgression,
     weeklyMuscleVolume: aiDecisionContext.muscleVolume.weeklyMuscleVolume,
     muscleVolumeTrend: aiDecisionContext.muscleVolume.muscleVolumeTrend,

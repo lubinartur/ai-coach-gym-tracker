@@ -5,6 +5,7 @@
 
 import { workingSetsOnly } from "@/lib/exerciseWorkingSets";
 import { normalizeExerciseName } from "@/lib/exerciseName";
+import { getExerciseProgressionTrend } from "@/lib/progressionMemory";
 import type { WorkoutSession } from "@/types/trainingDiary";
 import type {
   ExerciseProgressionForAiBase,
@@ -248,6 +249,19 @@ function oneExercise(
 
   const histForTrend = chronological.map((c) => ({ topW: c.topW, topR: c.topR }));
   const { trend, stagnationSessions } = computeTrend(histForTrend);
+  const mem = getExerciseProgressionTrend(key, sessions);
+  const memTrend: ExerciseProgressionTrend =
+    mem.declining
+      ? "declining"
+      : mem.improving
+        ? "improving"
+        : mem.stagnantSessions >= 2
+          ? "stagnating"
+          : trend;
+  const memStag =
+    mem.stagnantSessions >= 2
+      ? Math.max(stagnationSessions, mem.stagnantSessions + 1)
+      : stagnationSessions;
 
   const lastS = chronological[chronological.length - 1]!;
   let volDrop2 = false;
@@ -273,11 +287,11 @@ function oneExercise(
       inSessionRepDrop: c.inSessionRepDrop,
       inSessionFatigue: c.inSessionFatigue,
     })),
-    trend,
-    stagnationSessions,
+    trend: memTrend,
+    stagnationSessions: memStag,
     fatigueDetected,
     volumeFalling3Sessions: volDrop2,
-    hint: buildHint(displayName, trend, repTarget, lastS.inSessionFatigue, volDrop2),
+    hint: buildHint(displayName, memTrend, repTarget, lastS.inSessionFatigue, volDrop2),
   };
 }
 

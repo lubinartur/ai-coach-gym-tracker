@@ -1,6 +1,5 @@
 import type {
   AiCoachRequestPayload,
-  AiInsight,
   AiTrainingSignalsResponse,
   ExerciseDecision,
   FatigueSignal,
@@ -11,7 +10,6 @@ import { stripJsonFence } from "@/server/openaiPlanJson";
 import { QUICK_WORKOUT_TEMPLATES } from "@/lib/workoutQuickTemplates";
 import { normalizeExerciseName } from "@/lib/exerciseName";
 import { buildDisplayTrainingSignals } from "@/lib/aiTrainingSignalsFormat";
-import { inferDecisionFromReason } from "@/lib/aiCoachDecisionInfer";
 import { parseAppLanguage } from "@/i18n/language";
 import { EMPTY_LAGGING_MUSCLE_BLOCK } from "@/lib/laggingMuscleAnalysis";
 import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
@@ -22,9 +20,36 @@ import {
   inferWorkoutSplitFromTitleAndExercises,
   splitRepetitionViolatesGuard,
 } from "@/lib/workoutSplitInference";
+import { muscleBucket, normalizeSplitLabel } from "@/lib/aiCoach/splitLabels";
+import { cap } from "@/lib/string/cap";
+import { getExerciseMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import { getWorkoutSkeleton, pickExerciseForSlot, type WorkoutSplit } from "@/lib/workoutSkeleton";
+import { dedupeExercisesGeneric, repairWorkoutBySkeleton } from "@/lib/workoutRoleRepair";
+import {
+  createWorkoutInsightsOpenAIClient,
+  generateWorkoutInsights,
+} from "@/server/generateWorkoutInsights";
 import type { ExerciseProgressionForAi } from "@/types/aiCoach";
-
-const MODEL = "gpt-4.1-mini";
+import {
+  MODE_COACH_RECOMMENDED,
+  MODE_HISTORY_BASED,
+  systemPrompt,
+} from "@/server/aiCoach/suggestNext/prompts";
+import { openAiSuggestChat } from "@/server/aiCoach/suggestNext/openaiChat";
+import {
+  computeConfidenceScore,
+  mergeConfidence,
+  withSuggestNextDevDebug,
+} from "@/server/aiCoach/suggestNext/debugAndConfidence";
+import { selectWorkoutStructure } from "@/services/exerciseSelectionEngine";
+import { parseLoadReps } from "@/lib/loadRepsParser";
+import { buildEngineRuntimeContextWithMemory } from "@/services/buildEngineRuntimeContext";
+import type { EngineRuntimeContext } from "@/types/engineRuntimeContext";
+import { evaluateTrainingAdaptation } from "@/services/trainingAdaptationEngine";
+import { addTrace } from "@/services/decisionTrace";
+import { evaluateLoadManagement } from "@/services/loadManagementEngine";
+import type { LoadManagementState } from "@/services/loadManagementEngine";
+import { EXERCISE_METADATA_V1 } from "@/data/exerciseMetadata";
 
 const SESSION_TYPES = [
   "Normal progression",
@@ -33,22 +58,6 @@ const SESSION_TYPES = [
   "Recovery session",
   "Technique session",
 ] as const;
-
-const DECISIONS: ExerciseDecision[] = [
-  "increase",
-  "maintain",
-  "reduce",
-  "technique",
-  "volume",
-];
-
-const INSIGHT_TYPES: AiInsight["type"][] = [
-  "progress",
-  "fatigue",
-  "balance",
-  "risk",
-  "opportunity",
-];
 
 const FATIGUE_SET: FatigueSignal[] = ["low", "moderate", "high", "unknown"];
 const VOLUME_SET: VolumeTrend[] = ["up", "down", "stable", "unknown"];
@@ -63,305 +72,6 @@ const DEFAULT_DECISION_LABEL: Record<ExerciseDecision, string> = {
 
 const MAX_LINE = 120;
 const MAX_EXERCISE_REASON = 150;
-const MAX_INSIGHTS = 3;
-
-const ADAPTIVE_VOLUME_RULES = `## Adaptive volume (set counts per exercise)
-You choose how many **working sets** per exercise (length of the "sets" array). This is not medical advice; it is load management from training data and profile.
-
-**Classify** each exercise as one of: compound (multi-joint primary patterns: squat, hinge, bench, row, OHP, etc.), accessory (secondary compound or machine compounds), isolation (single-joint), core/calves (ab work, calf raises, etc.).
-
-**Base set ranges (working sets, before fatigue adjustments):**
-- Compounds: 3–5 sets
-- Accessory: 2–4 sets
-- Isolation: 2–4 sets
-- Core/calves: 2–4 sets
-
-**Adjust using** \`athleteProfile\` and \`trainingContext\` / \`trainingSignals\` / per-exercise stats in the payload:
-- **goal = strength** (from profile): favor compounds; keep accessories on the lower end of their range.
-- **goal = build_muscle** / **build muscle**: moderate to higher volume where fatigue allows.
-- **goal = lose_fat**: moderate volume; avoid excessive strain on big lifts (no reckless volume).
-- **experience = beginner**: reduce total sets across the session (stay low in each range).
-- **experience = advanced**: you may use the upper end of ranges when signals support it.
-- **trainingSignals.fatigueSignal = high**: reduce working sets by **1** for each exercise (do not go below 2 working sets for main work unless the session is explicitly recovery-oriented).
-- **volume_trend = up** (from model output + log): do **not** add total sets vs a recent comparable session; hold or shift volume, do not stack more sets.
-- **volume_trend = down** and fatigue is **low** or **moderate**: a **small** increase in sets is allowed where justified.
-- **trainingSignals.lastWorkedMuscleGroups**: if the target muscle for an exercise was trained very recently, reduce direct volume for that pattern (fewer sets or a lighter choice).
-- **exercise baselines / history**: if last performance **dropped** (worse reps/loads), keep or **reduce** sets; if the lifter **progressed cleanly**, you may keep sets or add **at most +1** set when volume/fatigue trend supports it (no big jumps).
-
-**athleteProfile.recoveryCapacity** (always present: "normal" or "high"):
-- **normal**: default, conservative when in doubt.
-- **high**: you may allow **slightly** higher training volume when other signals (fatigue, trend) allow it—still **no aggressive jumps**, still respect fatigue and recent muscle overlap. This setting is for programming tolerance only, not a medical claim.
-
-**Per-exercise "reason" must include a short volume note** (same field as load rationale), e.g. "4 sets because fatigue is moderate and volume trend is down." or "3 sets; muscle group trained recently, keeping direct volume lower." Keep under the character limit.`;
-
-const SINGLE_VARIABLE_PROGRESSION_RULES = `## Single-variable progression (per exercise)
-For each exercise, you may adjust **weight**, **reps** (target for working sets), **set count** (length of "sets" array), or **exercise selection**—but apply **only one lever** of progressions per exercise in this session. Do **not** add weight and add a set in the same movement; do not bump reps and swap the exercise in one go. If multiple things need fixing, pick the **single** highest-priority change below.
-
-**Priority when increasing load / volume (in order):**
-1. **Increase reps** (toward a clear rep target; same weight and set count, same exercise).
-2. **Increase weight** (small step; same target reps and set count, same exercise) once reps hit the target **consistently** across recent sessions.
-3. **Increase sets by +1** (same weight and rep target) only when **weight has stagnated** for **2–3** sessions at the same rep target **and** fatigue/volume rules allow a set add.
-4. **Change exercise** (variation: close substitute) only when the **same movement has stagnated 3+ sessions** (load/reps/sets not improving)—make the swap the **only** change for that slot; keep prescription realistic.
-
-**Decision hints (read recentSessions + exercise baselines):**
-- Reps **below** target but **stable** (not falling off): progress by **reps first** (priority 1).
-- Reps **at target** session after session: progress by **weight** (priority 2).
-- **Weight flat** 2–3 sessions at that rep target: **+1 set** if allowed (priority 3), not a bigger weight jump at the same time.
-- **3+ sessions** of no progress on the same exercise: **variation** (priority 4), not a stack of other tweaks.
-
-**Fatigue (use trainingSignals.fatigue in your output and the log):**
-- **high** → **reduce** working sets; avoid adding load or new sets; prefer maintenance or small rep recovery, not new stressors.
-- **moderate** → **keep** set count unless a stagnation + volume rule clearly warrants **only** a +1 set; avoid compounding new stress.
-- **low** → allow progression along the priority ladder as data supports.
-
-**Volume trend (log + trainingSignals.volumeTrend / your training_signals.volume_trend):**
-- **down** → set **increase** is **allowed** when the stagnation rule (2–3 sessions) calls for it and fatigue is not high.
-- **up** → **do not** increase set count; use reps or weight, or hold—never add sets for progression while trend is up.
-
-**Per-exercise "reason" must name the one thing you changed** and why, e.g. "Reps 8→9; still below 10 target, load unchanged." or "Weight +2.5kg; hit 3×10 clean last time." or "Sets increased from 3 to 4; fatigue moderate, volume trend was decreasing, load flat two sessions." or "Swapped to incline DB press; flat bench stalled 3 weeks." Keep within the character limit.`;
-
-const PROGRESSION_ENGINE = `## Progression engine (client-computed, use it)
-The request includes **exerciseProgression**: one object per key exercise, built from the last 3–5 sessions. Warm-ups are **excluded**; repTargetRange marks **working** sets in that band. Each entry has: **history** (oldest → newest), **trend** in { improving, stable, stagnating, declining, unknown }, **stagnationSessions**, **fatigueDetected**, **volumeFalling3Sessions**, **hint** (English cue), and **stimulus** fields: **stimulusScore** (0–10), **stimulusComponents**, **stimulusInterpretation** (strong | acceptable | weak | poor), **stimulusBelowFiveLastThreeSessions** (boolean).
-- Use this as the **primary** signal for how to progress each exercise, together with trainingSignals, **stimulusScore**, and recentSessions. Per-exercise "reason" should align with **trend**, **hint**, and **stimulus** when applicable.
-- If **fatigueDetected** is true: do **not** add weight or sets for that exercise.
-- If **volumeFalling3Sessions** is true: no load or set increases until execution stabilizes.
-- **Stagnating** + low global fatigue: only one lever (reps, then weight, then +1 set, or swap) per the single-variable rules.
-- **Stagnating** 3+ sessions: consider a **close exercise swap** in coach_recommended (one variable only for that slot).
-- **Improving** or **stable** with no local fatigue: small planned progression is OK.
-- If exerciseProgression is empty or an exercise is missing, use recentSessions and exerciseStats.`;
-
-const STIMULUS_SCORING = `## Exercise stimulus score (client-computed, use it)
-Each \`exerciseProgression\` item includes a **0–10** \`stimulusScore\` (higher = better response to the exercise recently), plus a breakdown in \`stimulusComponents\`.
-- **8–10 (strong)**: keep the movement; small planned progression is appropriate when other rules allow.
-- **6–7 (acceptable)**: default programming.
-- **4–5 (weak)**: consider **one** of: rep emphasis, a small +set, or a **close variation** next time.
-- **0–3 (poor) or** \`stimulusBelowFiveLastThreeSessions\` = true: prioritize **exercise change** (variation) or a technique-focused slot over stacking load—cite in the "reason" in the UI language, e.g. (EN) "Incline DB press stimulus has been low; try incline Smith or barbell to refresh patterning."
-- Do not contradict **single-variable** or **deload/periodization** when applying stimulus.`;
-
-const MUSCLE_VOLUME_WEEKLY = `## Weekly muscle volume (client-computed, use it)
-The request includes:
-- \`weeklyMuscleVolume\`: **working set** count per **primary** muscle in the last **7 calendar days** in the user timezone.
-- \`muscleVolumeTrend\`: for each primary muscle, change vs the **previous** 7-day window (up | down | stable | unknown).
-- \`muscleHypertrophyRanges\`: recommended **weekly** working-set bands for hypertrophy (chest, back, legs 10–20; shoulders 8–16; biceps/triceps 6–14; hamstrings 8–16; calves 6–12; etc.).
-- \`muscleVolumeHistory\`: four **non-overlapping** 7-day buckets, oldest first (for long-term context).
-
-**Map each exercise** to a primary muscle using your judgment aligned with a typical split (bench/incline/presses → **chest**; overhead presses → **shoulders**; pull-ups, rows, deadlifts (non-RDL) → **back**; RDL, leg curl → **hamstrings**; squat, leg press, leg ext → **legs**; pushdowns, extensions → **triceps**; etc.). Use the payload numbers as ground truth; do not recompute.
-
-**Set-count decisions for this session:**
-- If **weeklyMuscleVolume** for a muscle is **at or above** \`muscleHypertrophyRanges[muscle].max\`: do **not** add working sets for exercises with that target muscle. Prefer maintain sets, reduce, or use reps/weight/technique without increasing set count. Say so in the global **"reason"** and/or the exercise **"reason"** in the UI language, e.g. (EN) "Chest volume is already high this week (18 sets), so bench sets stay the same."
-- If weekly volume is **inside** the range: use normal **Adaptive volume** and single-variable rules.
-- If volume is **below the minimum** and fatigue allows: a **+1** working set is allowed (only one variable per exercise). Explain briefly, e.g. (EN) "Back volume is low this week (6 sets), so one extra set on rows."
-- Weave **\`muscleVolumeTrend\`** and **\`weeklyMuscleVolume\`** with **exerciseProgression** and \`trainingSignals\`: "increase/maintain/reduce sets" must respect weekly caps first.
-
-**Per-exercise "reason"**: when set count is tied to this module, add one short clause in the same language, e.g. (RU) "Объём груди на этой неделе высокий — сеты без изменений."`;
-
-const LAGGING_MUSCLE = `## Lagging muscle & stagnation (client-computed, use it)
-The request includes, **after** weekly volume:
-- \`muscleProgressScore\`: one trend per **primary** muscle, rolled up from \`exerciseProgression\` (same 3× flat top weight+reps → **stagnating** rule as the progression engine; **working sets** only).
-- \`laggingMuscleGroups\`: which muscles are underperforming **vs** the rest of the log (e.g. chest **stagnating** while shoulders **improving** → chest may appear here when appropriate).
-- \`stagnatingExercises\`: list of exercise names (with \`primaryMuscle\` and \`trend\`) to cite in the session. **Lagging** may also list a muscle if **\`stimulusBelowFiveLastThreeSessions\` + sub-5** \`stimulusScore\` on that exercise flags a weak response pattern.
-- \`laggingInterventionBlockers\`: if \`highFatigue\` is true from \`trainingSignals.fatigueSignal\` **or** a muscle is listed in \`musclesAtWeeklyVolumeMax\` (over weekly volume range), you **must not** add working sets, add a new direct exercise, or add weekly volume to that muscle—use **reps, technique, or substitution** without piling on sets instead.
-- \`muscleProgressHistory\`: current snapshot (shape for future UI).
-
-**If a muscle lags and blockers are clear:**
-- You may **+1** working set on a main or accessory for that pattern, or add one **chest / back / …** fly or isolation **only** when it is the **single** variable for that slot and not blocked by \`laggingInterventionBlockers\`.
-- Or keep load and **raise rep target** in range (one variable). Explain in the session "reason" or the exercise "reason" in the UI language, e.g. (EN) "Chest has stalled; one extra set on bench." or (EN) "Progression paused on incline; added a chest fly."`;
-
-const PERIODIZATION_BLOCK = `## Periodization (4-week session cycle, client-computed)
-The request includes \`periodization\`:
-- **16-workout macrocycle** = 4 “training weeks” × **4 completed sessions** each, then the pattern **repeats** from week 1.
-- \`trainingCycleWeek\` is 1–4: **1** = moderate, **2** = progression, **3** = peak, **4** = scheduled deload.
-- \`workoutIndexInCycle\` (0–15) and \`workoutPositionInTrainingWeek\` (0–3) are your position; \`totalSessionsLogged\` is how many sessions exist before this prescription.
-- \`scheduledPhase\` = phase from the week; \`effectivePhase\` = **after** rules below (may be **deload** early).
-- \`forcedDeload\` = true when \`trainingSignals.fatigueSignal\` is **high** (early deload): treat the session as **deload** even if \`trainingCycleWeek\` is 1–3. Prefer "Recovery session" and technique-friendly work.
-- \`deloadSetVolumeMultiplierTarget\` ≈ **0.6–0.7** in deload: **reduce working sets** by about **30–40%** vs your usual (e.g. 4 → 2–3); keep loads similar or **slightly** lighter; **no** new PR attempts or +sets progression.
-- \`cycleTypePreference\` is for future (strength | hypertrophy | mixed); until the user can set it, assume **hypertrophy**-style volume priors with these bands.
-
-**Phase behavior for the *effective* phase:**
-- **moderate** — normal set counts; standard single-variable progression.
-- **progression** — allow **+1** set on a **key** lift and normal weight work when not blocked by volume or lagging blockers.
-- **peak** — heaviest/ highest volume the rules allow; still no violation of single-variable, weekly cap, or fatigue rules.
-- **deload** — reduce **sets and total session volume**; no progression levers; emphasize execution.
-
-**Mention the cycle in user-facing "reason" or insights** when it shapes the call, e.g. (EN) "This session falls in a higher-intensity week of your cycle (week 3)." or (EN) "Planned deload: fewer working sets to recover."`;
-
-const AI_DECISION_CONTEXT = `## Unified decision context (primary source of truth)
-The request includes \`aiDecisionContext\`. Use it as the **main** source of truth for decisions and explanations; do not try to recompute the signals.
-It contains:
-- \`recentWorkouts\`: compact recent sessions (for citing history).
-- \`exerciseHistory\`: slim per-exercise recent rows (top set, rep drop, working sets, stimulus).
-- \`fatigueSignals\`: same as \`trainingSignals\` (fatigue/volume trend/split).
-- \`splitContinuityGuard\`: last split label + whether repeating it is allowed (48h rule) + preferred alternatives.
-- \`muscleVolume\`: weekly volume + trend + safe ranges (+ optional history).
-- \`laggingMuscles\`: lagging groups + stagnating exercises + blockers.
-- \`stimulusScores\`: per-exercise stimulus 0–10 + interpretation.
-- \`periodizationState\`: cycle week + effective phase (including early deload).
-- \`progressionRecommendations\`: the per-exercise progression rows used by the engine.
-
-When explaining choices, prefer phrases like:
-- (EN) \"Fatigue is high, so this is an early deload.\" 
-- (EN) \"Chest volume is at the weekly cap, so no extra chest sets.\" 
-- (EN) \"Incline DB press stimulus has been weak; use a close variation.\"`;
-
-const SPLIT_CONTINUITY_GUARD = `## Split continuity guard (must obey)
-Use \`aiDecisionContext.splitContinuityGuard\` to avoid repeating the same split back-to-back.
-- If \`guardActive\` is true and your planned split label equals \`lastWorkoutSplit\`, you must choose an alternative split.
-- Choose the next split from \`preferredNextSplits\` in order.
-- You may repeat the split only if \`allowSameSplit\` is true (e.g. 48+ hours passed) or the user explicitly asked to repeat/specialize.
-- If this rule changes your plan, mention it briefly in the session \"reason\" in the UI language (e.g. \"Last session was Pull, so today is Push for recovery.\").`;
-
-const SPLIT_SELECTION_ENGINE = `## Split selection engine (must obey)
-The request includes \`aiDecisionContext.splitSelection\`.
-- Use \`splitSelection.recommendedSplit\` as the default split to generate when it is one of Push/Pull/Legs/Full.
-- When multiple next splits are allowed (e.g. after split continuity guard), do not guess: follow \`splitSelection\` candidate scoring and reasons.
-- If you intentionally choose a different split than \`recommendedSplit\`, briefly explain why in the session \"reason\".
-- If \`splitSelection\` is missing, fall back to \`splitContinuityGuard.preferredNextSplits[0]\`.`;
-
-const TRAINING_SIGNALS_ENGINE = `## Training signal engine + progression planner (must obey)
-The request includes these inside \`aiDecisionContext\`:
-- \`trainingSignals\`: deeper context: \`exerciseTrends\`, \`fatigueTrend\`, \`muscleRecovery\`, \`progressionFocus\`, \`alerts\`.
-- \`progressionPlan\`: \`globalStrategy\` and per-exercise \`exercisePlans\`.
-
-Rules:
-- Do not ignore \`progressionPlan\`. Use \`exercisePlans\` to decide whether to increase reps/weight/sets, maintain, reduce, or swap a movement.
-- If \`progressionPlan.globalStrategy\` is **deload**, do not increase weight or sets; reduce working sets and keep technique.
-- If an exercisePlan action is \`increase_reps\`, do not also increase weight; one variable per exercise.
-- If action is \`maintain\`, explain what is being consolidated in the exercise \"reason\" (short).
-- Use \`trainingSignals.muscleRecovery\` to avoid overtraining: if a target muscle is \`fatigued\`, keep direct work conservative.
-- Keep explanations brief and in the UI language. You may surface up to 3 short signal facts via one insight card (optional).`;
-
-const TRAINING_PHASE_ENGINE = `## Training phase (must obey)
-The request includes \`aiDecisionContext.trainingPhase\` with:
-\`phase\` in { build, consolidate, deload, unknown }, \`weekInPhase\`, and a short \`reason\`.
-
-Rules:
-- If phase = **build**: allow gradual progression (prefer reps → then small weight) when other blockers allow.
-- If phase = **consolidate**: stabilize loads, maintain sets, emphasize technique and repeat quality performance.
-- If phase = **deload**: reduce sets or intensity; avoid progression levers (no weight increases, no added sets).
-- Mention the phase briefly in the session \"reason\" or one insight (max 1 phase insight).`;
-
-const ADAPTIVE_VOLUME_PLAN = `## Adaptive volume plan (must obey)
-The request includes \`aiDecisionContext.volumePlan.muscleVolume\`: one row per muscle with weeklySets and an action:
-- action = **increase** → you may add **+1** working set for that muscle if not blocked by fatigue/weekly caps/periodization.
-- action = **maintain** → keep set count stable for that muscle.
-- action = **reduce** → remove **one accessory set** (or keep sets lower) for that muscle this session.
-Use this together with weeklyMuscleVolume and hypertrophy ranges; when they conflict, prefer safety (do not exceed caps).`;
-
-const systemPrompt = `You are an AI strength training coach (training intelligence layer).
-
-Your job: read the user's log, detect patterns (progress, fatigue, balance, volume), and propose the NEXT workout with clear, evidence-based coaching.
-
-You are not a fitness blogger. You are a practical coach. Never output generic program copy.
-
-${ADAPTIVE_VOLUME_RULES}
-
-${SINGLE_VARIABLE_PROGRESSION_RULES}
-
-${PROGRESSION_ENGINE}
-
-${STIMULUS_SCORING}
-
-${MUSCLE_VOLUME_WEEKLY}
-
-${LAGGING_MUSCLE}
-
-${PERIODIZATION_BLOCK}
-
-${AI_DECISION_CONTEXT}
-
-${SPLIT_CONTINUITY_GUARD}
-
-${SPLIT_SELECTION_ENGINE}
-
-${TRAINING_SIGNALS_ENGINE}
-
-${TRAINING_PHASE_ENGINE}
-
-${ADAPTIVE_VOLUME_PLAN}
-
-## Must do
-- Explain why this next session is chosen (reference split rotation, fatigue, volume trend, strategy).
-- For every exercise, explain why the weight/rep scheme was selected; reference real previous sets when the data exists. Cite **working** sets only: not empty-bar or very light warm-up sets. Prefer a set that matches the planned rep range, or the heaviest working set in the last session for that exercise; the app compares against local logs and may re-label.
-- For every exercise, the **number of objects in "sets"** is your working-set count: follow **Adaptive volume** and **Single-variable progression** in this system message. The per-exercise **"reason"** must briefly name the **one** thing you changed (reps, weight, set count, or exercise) and tie it to fatigue, volume trend, stagnation, or rep target—under 150 characters.
-- Prefer the user's real exercise names in history_based mode; in coach_recommended you may use conventional names but must justify changes.
-- Keep session "reason", insights, and training_signals lines at or under 120 characters where possible. Shorter is better.
-- Do not invent injuries, medical states, pain, or recovery context unless the user message explicitly provides it.
-- Set "confidence" to 0–100: higher when many suggested lifts have clear recent history; lower with little history, many new exercises, or an unclear training pattern. You may lean conservative.
-
-## Do not
-- Do not use filler like "main compound movement for legs" or "isolation supports development" without data.
-- Do not change **more than one** of (reps target, weight, set count, exercise) for the same exercise in one prescription, except explicit deload/recovery session rules.
-- Do not output markdown or text outside the JSON object.
-
-## UI language
-The request JSON includes "language": "en" | "ru". Write every user-visible string VALUE in that language: title, reason, training_signals.split, training_signals.strategy, insights titles and text, decision_label, per-exercise reason, warnings, and exercise names if you naturalize them in that language.
-- If language is "ru", use Russian for those values.
-- If language is "en", use English.
-JSON property names stay in English. Keep machine enum field VALUES exactly as required: "session_type" must be one of the five English session labels listed above; "fatigue", "volume_trend", and "decision" must use the English enum tokens; do not translate those enum strings or the JSON keys.
-
-## Good vs bad
-Good: "You hit 100×10×3 last session. Add one 105×10 set."
-Bad: "Main compound movement for legs."
-
-Good: "Sets increased from 3 to 4 because fatigue was moderate and volume trend was decreasing."
-Bad: "More volume for growth." (no data, and implies multiple levers at once)
-
-Good: "Triceps appeared in 2 recent sessions. Keep isolation volume moderate."
-Bad: "Triceps isolation supports arm development."
-
-## Training insights (the "insights" array)
-- Return at most 3 items. If the log is too thin for concrete patterns, return an empty array.
-- No generic or motivational filler; each insight must cite real data from the payload (recentSessions, exerciseProgression, exerciseStats, baselines, split pattern).
-- Each "title" and "text" must be under 120 characters (insights only).
-- "type" must be one of: progress | fatigue | balance | risk | opportunity. Use "risk" for load/volume/schedule concerns or injury-adjacent caution grounded in the log, not for invented medical details.
-- Write "title" and "text" in the language given by "language" in the request (en or ru); keep JSON keys in English.
-
-## Output (JSON only, no markdown)
-Use this exact structure and field names:
-{
-  "title": string,
-  "session_type": "Normal progression" | "Volume focus" | "Intensity focus" | "Recovery session" | "Technique session",
-  "confidence": number,
-  "reason": string (≤120 chars, why this session),
-  "training_signals": {
-    "split": string (short, e.g. the next focus or rotation label),
-    "fatigue": "low" | "moderate" | "high" | "unknown",
-    "volume_trend": "up" | "down" | "stable" | "unknown",
-    "strategy": string (e.g. progressive overload, short line)
-  },
-  "insights": [
-    { "type": "progress" | "fatigue" | "balance" | "risk" | "opportunity", "title": string, "text": string }
-  ] (0–3 items, each "title" and "text" ≤120 chars; must reference real log data, or use [] if insufficient data),
-  "exercises": [
-    {
-      "name": string,
-      "sets": [ { "weight": number, "reps": number } ],
-      "decision": "increase" | "maintain" | "reduce" | "technique" | "volume",
-      "decision_label": string (short label for UI, e.g. "+2.5kg progression", "Maintain weight"),
-      "reason": string (≤150 chars: state the single progression change + why; per Adaptive volume + single-variable rules; cite last session if possible)
-    }
-  ],
-  "warnings": string[]
-}
-
-Use "exerciseProgression", "trainingSignals", "exerciseBaselines", and "recentSessions" in the user payload. Use "aiMode" and the MODE block. Do not echo JSON schema or field names inside user-facing strings.`;
-
-const MODE_HISTORY_BASED = `MODE: history_based
-- Strongly prefer exercises the user has already used (recentSessions, mostRecentExercises, exerciseStats, favorites).
-- Keep session structure close to their pattern; minimal exercise churn.
-- Progress one variable at a time per exercise (reps → weight → sets → exercise swap); their history is the template.`;
-
-const MODE_COACH_RECOMMENDED = `MODE: coach_recommended
-- Use history to estimate strength (exerciseBaselines, recentSessions, exerciseStats); loads must be realistic.
-- 4–6 exercises, one clear focus (push, pull, legs, etc.).
-- You may change exercises for balance; if so, that change should be the only progression lever for that slot unless deloading—align with single-variable rules.
-- Use clean standard names; quickTemplates are reference only.`;
-
-function cap(s: string, n: number): string {
-  const t = s.trim();
-  if (t.length <= n) return t;
-  return `${t.slice(0, n - 1).trimEnd()}…`;
-}
 
 function isFatigue(s: string): s is FatigueSignal {
   return (FATIGUE_SET as string[]).includes(s);
@@ -371,28 +81,15 @@ function isVolume(s: string): s is VolumeTrend {
   return (VOLUME_SET as string[]).includes(s);
 }
 
-function isDecision(s: string): s is ExerciseDecision {
-  return (DECISIONS as string[]).includes(s);
-}
+// (legacy insight parsing removed; insights derived from decisions)
 
-function isInsightType(s: string): s is AiInsight["type"] {
-  return (INSIGHT_TYPES as string[]).includes(s);
-}
-
-/** Maps legacy model output to current schema. */
-function normalizeInsightTypeToken(
-  s: string,
-): AiInsight["type"] | null {
-  const t = s === "warning" ? "risk" : s;
-  return isInsightType(t) ? t : null;
-}
-
-type ParsedExercise = {
-  name: string;
-  sets: { weight: number; reps: number }[];
-  reason: string;
-  decision?: ExerciseDecision;
-  decision_label?: string;
+type ParsedProgrammedExercise = {
+  exercise: string;
+  sets: number;
+  reps: string;
+  restSeconds: number;
+  load: string;
+  progression: string;
 };
 
 type ParsedModel = {
@@ -407,46 +104,35 @@ type ParsedModel = {
     strategy: string;
   }>;
   insights?: unknown;
-  exercises: ParsedExercise[];
+  programmedExercises: ParsedProgrammedExercise[];
   warnings: string[];
 };
 
-function parseExercisesArray(arr: unknown): ParsedExercise[] | null {
-  if (!Array.isArray(arr) || arr.length < 1 || arr.length > 8) return null;
-  const out: ParsedExercise[] = [];
+function parseProgrammedExercisesArray(arr: unknown): ParsedProgrammedExercise[] | null {
+  if (!Array.isArray(arr) || arr.length < 1 || arr.length > 10) return null;
+  const out: ParsedProgrammedExercise[] = [];
   for (const ex of arr) {
     if (!ex || typeof ex !== "object") return null;
     const e = ex as Record<string, unknown>;
-    if (typeof e.name !== "string" || !e.name.trim()) return null;
-    const reasonRaw = e.reason;
-    const reason =
-      typeof reasonRaw === "string" && reasonRaw.trim()
-        ? cap(reasonRaw.trim(), MAX_EXERCISE_REASON)
-        : "";
-    if (!Array.isArray(e.sets) || e.sets.length < 1 || e.sets.length > 12) {
-      return null;
-    }
-    const sets: { weight: number; reps: number }[] = [];
-    for (const s of e.sets) {
-      if (!s || typeof s !== "object") return null;
-      const r = s as Record<string, unknown>;
-      const weight = Number(r.weight);
-      const reps = Number(r.reps);
-      if (!Number.isFinite(weight) || weight < 0) return null;
-      if (!Number.isFinite(reps) || reps < 0) return null;
-      sets.push({ weight, reps: Math.round(reps) });
-    }
-    const decision = typeof e.decision === "string" ? e.decision : undefined;
-    const decision_label =
-      typeof e.decision_label === "string" ? e.decision_label : undefined;
+    const exercise = typeof e.exercise === "string" ? e.exercise.trim() : "";
+    if (!exercise) return null;
+    const sets = Number(e.sets);
+    const reps = typeof e.reps === "string" ? e.reps.trim() : "";
+    const restSeconds = Number(e.restSeconds);
+    const load = typeof e.load === "string" ? e.load.trim() : "";
+    const progression = typeof e.progression === "string" ? e.progression.trim() : "";
+    if (!Number.isFinite(sets) || sets < 1 || sets > 12) return null;
+    if (!reps) return null;
+    if (!Number.isFinite(restSeconds) || restSeconds < 0 || restSeconds > 1200) return null;
+    if (!load) return null;
+    if (!progression) return null;
     out.push({
-      name: e.name.trim(),
-      reason,
-      sets,
-      decision: isDecision(decision ?? "")
-        ? (decision as ExerciseDecision)
-        : undefined,
-      decision_label: decision_label?.trim(),
+      exercise,
+      sets: Math.round(sets),
+      reps: cap(reps, 32),
+      restSeconds: Math.round(restSeconds),
+      load: cap(load, 32),
+      progression: cap(progression, 120),
     });
   }
   return out;
@@ -469,8 +155,8 @@ function parseModelLoose(raw: unknown): ParsedModel | null {
   }
   if (typeof o.reason !== "string" || !o.reason.trim()) return null;
   if (!Array.isArray(o.warnings)) return null;
-  const exercises = parseExercisesArray(o.exercises);
-  if (!exercises) return null;
+  const programmedExercises = parseProgrammedExercisesArray(o.programmedExercises);
+  if (!programmedExercises) return null;
   const ts = o.training_signals;
   const training_signals =
     ts && typeof ts === "object" ? (ts as ParsedModel["training_signals"]) : undefined;
@@ -483,32 +169,14 @@ function parseModelLoose(raw: unknown): ParsedModel | null {
       : undefined,
     training_signals,
     insights: o.insights,
-    exercises,
+    programmedExercises,
     warnings: o.warnings.filter(
       (w) => typeof w === "string" && w.trim().length > 0,
     ) as string[],
   };
 }
 
-function parseInsightItems(raw: unknown): AiInsight[] {
-  if (!Array.isArray(raw)) return [];
-  const out: AiInsight[] = [];
-  for (const it of raw) {
-    if (!it || typeof it !== "object") continue;
-    const o = it as Record<string, unknown>;
-    if (typeof o.type !== "string" || !o.type.trim()) continue;
-    const type = normalizeInsightTypeToken(o.type.trim());
-    if (!type) continue;
-    if (typeof o.title !== "string" || !o.title.trim()) continue;
-    if (typeof o.text !== "string" || !o.text.trim()) continue;
-    out.push({
-      type,
-      title: cap(o.title.trim(), MAX_LINE),
-      text: cap(o.text.trim(), MAX_LINE),
-    });
-  }
-  return out.slice(0, MAX_INSIGHTS);
-}
+// Insights are now derived from final exercise decisions (post-progression).
 
 function buildTrainingSignalsFromModelOrPayload(
   parsed: ParsedModel,
@@ -536,76 +204,417 @@ function buildTrainingSignalsFromModelOrPayload(
   );
 }
 
-function finalizeExercises(
-  list: ParsedExercise[],
+function parseFirstInt(s: string): number | null {
+  const m = s.match(/(\d+)/);
+  if (!m) return null;
+  const n = parseInt(m[1]!, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isRearDeltOrTrapExercise(name: string): boolean {
+  const s = name.toLowerCase();
+  return (
+    s.includes("rear delt") ||
+    s.includes("rear deltoid") ||
+    s.includes("reverse fly") ||
+    s.includes("face pull") ||
+    s.includes("trap") ||
+    s.includes("shrug")
+  );
+}
+
+function filterExercisesBySplit(
+  exercises: SuggestNextWorkoutResponse["exercises"],
+  split: "push" | "pull" | "legs" | "full" | "unknown",
 ): SuggestNextWorkoutResponse["exercises"] {
-  return list.map((e) => {
-    const r = e.reason.trim() || "Load follows your log and the suggested sets.";
-    const d = e.decision ?? inferDecisionFromReason(r);
-    const label = e.decision_label?.trim() || DEFAULT_DECISION_LABEL[d];
-    return {
-      name: e.name,
-      sets: e.sets,
-      reason: cap(r, MAX_EXERCISE_REASON),
-      decision: d,
-      decision_label: cap(label, 80),
-    };
+  if (split === "unknown" || split === "full") return exercises;
+  return exercises.filter((ex) => {
+    const g = getExerciseMuscleGroup(ex.name);
+    if (split === "push") {
+      return g === "chest" || g === "shoulders" || g === "triceps";
+    }
+    if (split === "pull") {
+      // Allow rear delts/traps as shoulder work on pull days.
+      if (g === "shoulders") return isRearDeltOrTrapExercise(ex.name);
+      return g === "back" || g === "biceps" || g === "core" || g === "forearms";
+    }
+    // legs
+    return g === "legs" || g === "hamstrings" || g === "calves";
   });
 }
 
-function computeConfidenceScore(
-  input: AiCoachRequestPayload,
-  exerciseNames: { name: string }[],
-): number {
-  const stats = input.exerciseStats ?? [];
-  const statByKey = new Map(
-    stats.map((s) => [normalizeExerciseName(s.name), s]),
-  );
-  const recent = input.recentSessions?.length ?? 0;
-  let base = 74;
-  if (recent === 0) base -= 30;
-  else if (recent < 2) base -= 14;
-  if (!input.trainingSignals?.recentSplitPattern?.length && recent < 3) {
-    base -= 12;
-  }
-  if (exerciseNames.length === 0) {
-    return Math.max(8, Math.min(96, Math.round(base)));
-  }
-  let withHistory = 0;
-  for (const e of exerciseNames) {
-    const n = normalizeExerciseName(e.name);
-    const st = statByKey.get(n);
-    if (st && st.sessionsInHistory > 0) withHistory += 1;
-  }
-  const ratio = withHistory / exerciseNames.length;
-  const unknown = exerciseNames.length - withHistory;
-  const step = base * (0.28 + 0.72 * ratio) - unknown * 5.5;
-  return Math.max(8, Math.min(96, Math.round(step)));
+function toSkeletonSplit(split: "push" | "pull" | "legs" | "full" | "unknown"): WorkoutSplit | null {
+  if (split === "pull") return "Pull";
+  if (split === "push") return "Push";
+  if (split === "legs") return "Legs";
+  return null;
 }
 
-function mergeConfidence(
-  modelConf: number | undefined,
-  server: number,
-): number {
-  if (modelConf === undefined || !Number.isFinite(modelConf)) {
-    return server;
+function buildDefaultWorkingSetsForExercise(
+  name: string,
+  input: AiCoachRequestPayload,
+): { weight: number; reps: number }[] {
+  const base = (input.trainingSignals?.exerciseBaselines ?? []).find(
+    (b) => normalizeExerciseName(b.name) === normalizeExerciseName(name),
+  );
+  const last = base?.latestSets?.find((s) => (s.weight ?? 0) > 0 && (s.reps ?? 0) > 0) ?? null;
+  const w = last ? Math.max(0, Number(last.weight) || 0) : 20;
+  const r = last ? Math.max(0, Math.round(Number(last.reps) || 0)) : 10;
+  return [{ weight: w, reps: r }, { weight: w, reps: r }, { weight: w, reps: r }];
+}
+
+function buildExercisesFromStructureAndProgramming(input: {
+  payload: AiCoachRequestPayload;
+  structure: ReturnType<typeof selectWorkoutStructure>;
+  programmed: ParsedProgrammedExercise[];
+  runtime: EngineRuntimeContext;
+  loadManagement?: LoadManagementState;
+}): { exercises: SuggestNextWorkoutResponse["exercises"]; warnings: string[] } {
+  const warnings: string[] = [];
+  const byExercise = new Map<string, ParsedProgrammedExercise>();
+  for (const p of input.programmed) {
+    byExercise.set(p.exercise, p);
   }
-  const m = Math.max(0, Math.min(100, Math.round(modelConf)));
-  return Math.max(0, Math.min(100, Math.round(0.42 * m + 0.58 * server)));
+
+  const out: SuggestNextWorkoutResponse["exercises"] = [];
+  for (const s of input.structure.exercises) {
+    const p = byExercise.get(s.exercise) ?? null;
+    if (!p) {
+      warnings.push(`Missing programming for: ${s.exercise}`);
+    }
+    const baseSets = p ? Math.max(1, Math.min(12, Math.round(p.sets))) : 3;
+    const deloadMult = input.runtime.recovery.deloadRecommended
+      ? input.runtime.recovery.rules.deloadVolumeMultiplier
+      : 1;
+    const lm = input.loadManagement;
+    const lmActive = Boolean(lm && lm.weeklyLoadStatus !== "normal");
+    const lmVolMult = lmActive ? lm!.volumeMultiplier : 1;
+    const lmIntMult = lmActive ? lm!.intensityMultiplier : 1;
+    // Use the most conservative multiplier without double-applying (e.g. recovery deload + load deload).
+    const setsMult = Math.min(deloadMult, lmVolMult);
+    const minSets = baseSets === 1 ? 1 : 2;
+    const setsCount = Math.max(minSets, Math.min(12, Math.round(baseSets * setsMult)));
+    const repsParsed = p ? parseFirstInt(p.reps) : null;
+    const loadParsed = p ? parseLoadReps(p.load) : undefined;
+
+    const defaults = buildDefaultWorkingSetsForExercise(s.exercise, input.payload);
+    const baseWeight = loadParsed?.load ?? defaults[0]?.weight ?? 20;
+    const baseReps = loadParsed?.reps ?? repsParsed ?? defaults[0]?.reps ?? 10;
+    const finalWeight =
+      lmIntMult !== 1
+        ? Math.round(Math.max(0, Number(baseWeight) || 0) * lmIntMult * 2) / 2
+        : Math.max(0, Number(baseWeight) || 0);
+
+    const sets = Array.from({ length: setsCount }, () => ({
+      weight: finalWeight,
+      reps: Math.max(0, Math.round(Number(baseReps) || 0)),
+    }));
+
+    const fatigueNote =
+      input.runtime.recovery.deloadRecommended
+        ? input.payload.language === "ru"
+          ? "Режим восстановления: меньше объёма."
+          : "Recovery/deload: reduced volume."
+        : input.runtime.recovery.globalFatigueLevel === "high"
+          ? input.payload.language === "ru"
+            ? "Высокая усталость: без форсирования."
+            : "High fatigue: avoid pushing intensity."
+          : "";
+
+    const progNote =
+      p && p.progression
+        ? `${p.progression}${p.restSeconds >= 0 ? `; rest ${p.restSeconds}s` : ""}${fatigueNote ? `; ${fatigueNote}` : ""}`
+        : input.payload.language === "ru"
+          ? "Программирование по каркасу; настрой нагрузку по журналу."
+          : "Skeleton programming; match load to your log.";
+
+    const lmNote = !lmActive
+      ? ""
+      : lm!.weeklyLoadStatus === "deload"
+        ? "load_management_deload"
+        : lm!.weeklyLoadStatus === "high"
+          ? "load_management_high_fatigue"
+          : "load_management_elevated";
+
+    out.push({
+      name: s.exercise,
+      sets,
+      decision: "maintain",
+      decision_label: DEFAULT_DECISION_LABEL.maintain,
+      reason: cap(lmNote ? `${progNote}; ${lmNote}` : progNote, MAX_EXERCISE_REASON),
+    });
+  }
+
+  // Detect extras in programmed list (should not happen; prompt forbids).
+  for (const p of input.programmed) {
+    if (!input.structure.exercises.some((x) => x.exercise === p.exercise)) {
+      warnings.push(`Unexpected programmed exercise (not in selectedStructure): ${p.exercise}`);
+    }
+  }
+
+  return { exercises: out, warnings };
+}
+
+function padExercisesToSkeleton(
+  exercises: SuggestNextWorkoutResponse["exercises"],
+  split: "push" | "pull" | "legs" | "full" | "unknown",
+  input: AiCoachRequestPayload,
+): SuggestNextWorkoutResponse["exercises"] {
+  const sk = toSkeletonSplit(split);
+  if (!sk) return exercises;
+  const slots = getWorkoutSkeleton(sk);
+  if (exercises.length >= Math.max(5, slots.length)) return exercises;
+
+  const used = new Set(exercises.map((e) => e.name));
+  const out = [...exercises];
+  for (const slot of slots) {
+    if (out.length >= slots.length) break;
+    const name = pickExerciseForSlot(slot, used);
+    if (used.has(name)) continue;
+    used.add(name);
+    out.push({
+      name,
+      sets: buildDefaultWorkingSetsForExercise(name, input),
+      decision: "maintain",
+      decision_label: input.language === "ru" ? "Стабильная нагрузка" : "Maintain",
+      reason:
+        input.language === "ru"
+          ? "Добавлено для структуры тренировки."
+          : "Added to complete the workout structure.",
+    });
+  }
+  return out;
+}
+
+function localDecisionLabel(
+  lang: AiCoachRequestPayload["language"],
+  kind: "inc_reps" | "inc_sets" | "inc_weight" | "reduce_sets" | "maintain",
+): string {
+  const ru = lang === "ru";
+  switch (kind) {
+    case "inc_reps":
+      return ru ? "+1 повторение" : "+1 rep";
+    case "inc_sets":
+      return ru ? "+1 подход" : "+1 set";
+    case "inc_weight":
+      return ru ? "+ вес" : "+ weight";
+    case "reduce_sets":
+      return ru ? "−1 подход" : "−1 set";
+    case "maintain":
+    default:
+      return ru ? "Стабильная нагрузка" : "Maintain";
+  }
+}
+
+function applyFatigueBasedProgression(
+  exercises: SuggestNextWorkoutResponse["exercises"],
+  fatigue: FatigueSignal,
+  lang: AiCoachRequestPayload["language"],
+  strategyText: string,
+  musclesAtWeeklyVolumeMax: string[],
+): SuggestNextWorkoutResponse["exercises"] {
+  const n = exercises.length;
+  if (n === 0) return exercises;
+
+  const strat = (strategyText ?? "").toLowerCase();
+  const strategyWantsProgress = /progress|прогресс|overload/.test(strat);
+  const shouldProgress = (fatigue === "low" || fatigue === "moderate") && strategyWantsProgress;
+  if (!shouldProgress) {
+    // High fatigue: bias to maintain.
+    return exercises.map((ex) => ({
+      ...ex,
+      decision: ex.decision === "reduce" ? "reduce" : "maintain",
+      decision_label:
+        ex.decision === "reduce" ? ex.decision_label : localDecisionLabel(lang, "maintain"),
+    }));
+  }
+
+  // Guarantee meaningful progression in "progress" strategy sessions.
+  // If the model is too passive (<30% progressed), we upgrade some maintain exercises to progression,
+  // aiming for ~35% (30–40% band).
+  const minRatioTrigger = 0.3;
+  const target = Math.max(1, Math.ceil(n * 0.35));
+  const progressed0 = exercises.filter((e) => e.decision !== "maintain").length;
+  if (progressed0 >= target) return exercises;
+  if (progressed0 / n >= minRatioTrigger) return exercises;
+
+  const next = exercises.map((e) => ({ ...e, sets: e.sets.map((s) => ({ ...s })) }));
+  let progressed = progressed0;
+
+  const blocked = new Set((musclesAtWeeklyVolumeMax ?? []).map((s) => String(s).toLowerCase()));
+
+  function priorityScore(name: string): number {
+    const s = name.toLowerCase();
+    const isolation =
+      /curl|pushdown|extension|fly|raise|lateral|rear delt|calf|crunch|plank|leg raise|pallof/.test(
+        s,
+      );
+    const cable = /cable|pulley/.test(s);
+    const machine = /machine|smith/.test(s);
+    // Higher is better.
+    return (isolation ? 300 : 0) + (cable ? 200 : 0) + (machine ? 100 : 0);
+  }
+
+  const idxs = next
+    .map((ex, i) => ({ i, score: priorityScore(ex.name) }))
+    .sort((a, b) => b.score - a.score);
+
+  for (const { i } of idxs) {
+    if (progressed >= target) break;
+    const ex = next[i]!;
+    if (ex.decision !== "maintain") continue;
+    if (!ex.sets.length) continue;
+
+    // Do not add stress for muscles already at weekly volume max.
+    const b = muscleBucket(ex.name);
+    const blockedByVolume =
+      blocked.has(b) ||
+      (b === "arms" && (blocked.has("biceps") || blocked.has("triceps"))) ||
+      (b === "legs" && blocked.has("hamstrings"));
+    if (blockedByVolume) continue;
+
+    if (fatigue === "moderate") {
+      // Moderate fatigue: reps-only progression.
+      for (const s of ex.sets) s.reps = Math.max(0, Math.round(s.reps) + 1);
+      ex.decision = "increase";
+      ex.decision_label = localDecisionLabel(lang, "inc_reps");
+      progressed += 1;
+      continue;
+    }
+
+    // Low fatigue: reps-first progression. (Keep it conservative; no auto-weight jumps here.)
+    for (const s of ex.sets) s.reps = Math.max(0, Math.round(s.reps) + 1);
+    ex.decision = "increase";
+    ex.decision_label = localDecisionLabel(lang, "inc_reps");
+    progressed += 1;
+  }
+
+  return next;
 }
 
 function finalizeResponse(
   parsed: ParsedModel,
   input: AiCoachRequestPayload,
+  structure: ReturnType<typeof selectWorkoutStructure>,
+  runtime: EngineRuntimeContext,
+  loadManagement?: LoadManagementState,
 ): SuggestNextWorkoutResponse {
-  const training_signals = buildTrainingSignalsFromModelOrPayload(
-    parsed,
-    input,
+  const training_signals0 = buildTrainingSignalsFromModelOrPayload(parsed, input);
+  const training_signals: AiTrainingSignalsResponse = {
+    ...training_signals0,
+    // Deterministic structure decides the split; keep model split text from drifting.
+    split: structure.split,
+    fatigue:
+      runtime.recovery.deloadRecommended || runtime.recovery.globalFatigueLevel === "high"
+        ? "high"
+        : training_signals0.fatigue,
+  };
+
+  const merged = buildExercisesFromStructureAndProgramming({
+    payload: input,
+    structure,
+    programmed: parsed.programmedExercises,
+    runtime,
+    loadManagement,
+  });
+
+  const splitLabel = normalizeSplitLabel(structure.split);
+  const exercisesSplitFiltered = filterExercisesBySplit(merged.exercises, splitLabel);
+  const skel = toSkeletonSplit(splitLabel);
+  const structureFix = skel
+    ? repairWorkoutBySkeleton({
+        exercises: exercisesSplitFiltered,
+        split: skel,
+        language: input.language,
+        buildDefaultSets: (name) => buildDefaultWorkingSetsForExercise(name, input),
+      })
+    : dedupeExercisesGeneric(
+        exercisesSplitFiltered,
+        input.language,
+        (name) => buildDefaultWorkingSetsForExercise(name, input),
+      );
+  const autoFixWarnings = structureFix.warning ? [structureFix.warning] : [];
+  const exercisesPadded = padExercisesToSkeleton(structureFix.exercises, splitLabel, input);
+  const exercises = applyFatigueBasedProgression(
+    exercisesPadded,
+    training_signals.fatigue,
+    input.language,
+    training_signals.strategy,
+    input.aiDecisionContext?.laggingMuscles?.laggingInterventionBlockers?.musclesAtWeeklyVolumeMax ??
+      [],
   );
-  const exercises = finalizeExercises(parsed.exercises);
-  const insights = parseInsightItems(parsed.insights);
+  // Insights are attached after finalize via generateWorkoutInsights (LLM + fallback).
+  const insights: SuggestNextWorkoutResponse["insights"] = [];
   const confServer = computeConfidenceScore(input, exercises);
   const confidence = mergeConfidence(parsed.confidence, confServer);
+  const warnings = (() => {
+    const w = [...autoFixWarnings, ...merged.warnings, ...parsed.warnings];
+    if (input.language !== "ru") return w;
+    return w.map((s) => {
+      const t = String(s ?? "").trim();
+      if (!t) return t;
+      if (t.startsWith("Missing programming for:")) {
+        return t.replace("Missing programming for:", "Не хватает программирования для:");
+      }
+      if (t.startsWith("Unexpected programmed exercise")) {
+        return t.replace(
+          "Unexpected programmed exercise (not in selectedStructure):",
+          "Лишнее упражнение в программировании (нет в выбранной структуре):",
+        );
+      }
+      // Fallback: keep original string if we don't have a safe translation yet.
+      return t;
+    });
+  })();
+  const RECOVERY_MAIN = [
+    "chest",
+    "back",
+    "shoulders",
+    "legs",
+    "biceps",
+    "triceps",
+    "core",
+  ] as const;
+  const recoverySummary: SuggestNextWorkoutResponse["recoverySummary"] = RECOVERY_MAIN.map((muscle) => {
+    const row = runtime.recovery.muscles[muscle];
+    const status =
+      row?.status === "ready"
+        ? ("ready" as const)
+        : row?.status === "moderate"
+          ? ("recovering" as const)
+          : row?.status === "fatigued"
+            ? ("fatigued" as const)
+            : ("unknown" as const);
+    const score =
+      typeof row?.recoveryScore === "number" && Number.isFinite(row.recoveryScore)
+        ? row.recoveryScore
+        : undefined;
+    return { muscle, status, score };
+  });
+  const volumeSummary: SuggestNextWorkoutResponse["volumeSummary"] = RECOVERY_MAIN.map((muscle) => {
+    const planRow = runtime.decision.volumePlan?.muscleVolume?.find(
+      (r) => String(r.muscleGroup).toLowerCase() === muscle,
+    );
+    const weekly =
+      runtime.decision.muscleVolume?.weeklyMuscleVolume?.[muscle] ??
+      (typeof planRow?.weeklySets === "number" ? planRow.weeklySets : undefined);
+    const sets =
+      typeof weekly === "number" && Number.isFinite(weekly) ? Math.max(0, Math.round(weekly)) : undefined;
+    const statusFromPlan =
+      planRow?.status === "low" || planRow?.status === "optimal" || planRow?.status === "high"
+        ? planRow.status
+        : null;
+    const status =
+      statusFromPlan ??
+      (sets === undefined
+        ? ("unknown" as const)
+        : sets <= 8
+          ? ("low" as const)
+          : sets <= 16
+            ? ("optimal" as const)
+            : ("high" as const));
+    return { muscle, status, sets };
+  });
   return {
     title: parsed.title,
     session_type: parsed.session_type,
@@ -614,7 +623,9 @@ function finalizeResponse(
     training_signals,
     insights,
     exercises,
-    warnings: parsed.warnings,
+    warnings,
+    recoverySummary,
+    volumeSummary,
   };
 }
 
@@ -629,104 +640,38 @@ export function getFallbackNextWorkoutSuggestion(): SuggestNextWorkoutResponse {
         "Romanian Deadlift",
         "Dumbbell Shoulder Press",
       ];
-  const base: ParsedModel = {
+  const exercises: SuggestNextWorkoutResponse["exercises"] = names.map((name) => ({
+    name,
+    sets: [
+      { weight: 20, reps: 10 },
+      { weight: 20, reps: 10 },
+      { weight: 20, reps: 10 },
+    ],
+    decision: "maintain",
+    decision_label: DEFAULT_DECISION_LABEL.maintain,
+    reason: cap("Default from the in-app full-body template.", MAX_EXERCISE_REASON),
+  }));
+
+  return {
     title: "Full body (default)",
     session_type: "Normal progression",
+    confidence: 24,
     reason: cap(
       "Add OPENAI_API_KEY to your environment for a personalized next session. This is a balanced template; adjust loads before training.",
       MAX_LINE,
     ),
-    exercises: names.map((name) => ({
-      name,
-      reason: cap("Default from the in-app full-body template.", MAX_EXERCISE_REASON),
-      sets: [
-        { weight: 20, reps: 10 },
-        { weight: 20, reps: 10 },
-        { weight: 20, reps: 10 },
-      ],
-      decision: "maintain",
-      decision_label: DEFAULT_DECISION_LABEL.maintain,
-    })),
+    training_signals: {
+      split: "Full",
+      fatigue: "unknown",
+      volume_trend: "unknown",
+      strategy: "Template fallback",
+    },
+    insights: [],
+    exercises,
     warnings: [
       "This is a non-AI fallback. Set loads to match your level before training.",
     ],
   };
-  const minimalPayload: AiCoachRequestPayload = {
-    language: "en",
-    aiMode: "history_based",
-    athleteProfile: {},
-    recentSessions: [],
-    logTotals: { totalVolume: 0, totalSetCount: 0 },
-    mostRecentExercises: [],
-    exerciseStats: [],
-    favorites: [],
-    settings: { timezone: "UTC" },
-    trainingContext: {
-      trainingPhase: "",
-      goal: "general_fitness",
-      progressionMode: "progressive overload",
-    },
-    trainingSignals: {
-      recentSplitPattern: [],
-      lastWorkedMuscleGroups: [],
-      volumeTrend: "unknown",
-      fatigueSignal: "unknown",
-      exerciseBaselines: [],
-    },
-    exerciseProgression: [],
-    ...EMPTY_MUSCLE_VOLUME_BLOCK,
-    ...EMPTY_LAGGING_MUSCLE_BLOCK,
-    periodization: { ...EMPTY_PERIODIZATION },
-    aiDecisionContext: {
-      recentWorkouts: [],
-      exerciseHistory: [],
-      fatigueSignals: {
-        recentSplitPattern: [],
-        lastWorkedMuscleGroups: [],
-        volumeTrend: "unknown",
-        fatigueSignal: "unknown",
-        exerciseBaselines: [],
-      },
-      splitContinuityGuard: {
-        lastWorkoutSplit: "Unknown",
-        hoursSinceLastWorkout: null,
-        allowSameSplit: true,
-        guardActive: false,
-        preferredNextSplits: ["Push", "Pull", "Legs", "Full"],
-        reasons: [],
-        specializationModeEnabled: false,
-      },
-      muscleVolume: {
-        weeklyMuscleVolume: { ...EMPTY_MUSCLE_VOLUME_BLOCK.weeklyMuscleVolume },
-        muscleVolumeTrend: { ...EMPTY_MUSCLE_VOLUME_BLOCK.muscleVolumeTrend },
-        muscleHypertrophyRanges: { ...EMPTY_MUSCLE_VOLUME_BLOCK.muscleHypertrophyRanges },
-      },
-      laggingMuscles: { ...EMPTY_LAGGING_MUSCLE_BLOCK },
-      progressionRecommendations: { exerciseProgression: [] },
-      periodizationState: { ...EMPTY_PERIODIZATION },
-      stimulusScores: [],
-      athleteProfile: {},
-      aiMode: "history_based",
-      trainingSignals: {
-        exerciseTrends: [],
-        muscleRecovery: [],
-        fatigueTrend: { level: "unknown", reasons: [] },
-        progressionFocus: "maintain",
-        alerts: [],
-      },
-      progressionPlan: { globalStrategy: "maintain", exercisePlans: [] },
-      trainingPhase: {
-        phase: "unknown",
-        weekInPhase: 1,
-        reason: "",
-        fatigueIndicator: "unknown",
-        volumeIndicator: "moderate",
-      },
-      volumePlan: { muscleVolume: [] },
-    },
-    quickTemplates: [],
-  };
-  return finalizeResponse(base, minimalPayload);
 }
 
 function normalizeSuggestPayload(
@@ -927,39 +872,20 @@ function normalizeSuggestPayload(
   };
 }
 
-function buildSuggestNextAiDebug(
+/** Attach LLM + fallback insight cards to a finalized suggest-next result (uses final exercises). */
+export async function enrichSuggestNextWorkoutInsights(
+  result: SuggestNextWorkoutResponse,
   input: AiCoachRequestPayload,
-): SuggestNextWorkoutResponse["aiDebug"] {
-  const recent = input.aiDecisionContext?.recentWorkouts?.[0];
-  const g = input.aiDecisionContext?.splitContinuityGuard;
-  const sel = input.aiDecisionContext?.splitSelection;
-  return {
-    lastWorkoutTitle: recent?.title?.trim() || "—",
-    performedAt: recent?.performedAt,
-    createdAt: recent?.createdAt ?? "—",
-    lastWorkoutSplit: g?.lastWorkoutSplit ?? "Unknown",
-    guardActive: Boolean(g?.guardActive),
-    preferredNextSplits: g?.preferredNextSplits
-      ? [...g.preferredNextSplits]
-      : [],
-    splitSelection: sel
-      ? {
-          recommendedSplit: sel.recommendedSplit,
-          candidates: sel.candidates.map((c) => ({ split: c.split, score: c.score })),
-          reason: sel.reason,
-        }
-      : undefined,
-  };
-}
-
-function withSuggestNextDevDebug(
-  r: SuggestNextWorkoutResponse,
-  input: AiCoachRequestPayload,
-): SuggestNextWorkoutResponse {
-  if (process.env.NODE_ENV === "development") {
-    return { ...r, aiDebug: buildSuggestNextAiDebug(input) };
-  }
-  return r;
+  apiKey: string | null,
+): Promise<SuggestNextWorkoutResponse> {
+  const key = apiKey?.trim() ?? "";
+  const { insights, source, warnings } = await generateWorkoutInsights({
+    workoutResult: result,
+    aiDecisionContext: input.aiDecisionContext,
+    language: input.language,
+    openaiClient: key ? createWorkoutInsightsOpenAIClient(key) : null,
+  });
+  return withSuggestNextDevDebug({ ...result, insights }, input, { source, warnings });
 }
 
 function responseViolatesSplitGuard(
@@ -992,80 +918,50 @@ function buildSplitGuardFallbackSuggestion(
     QUICK_WORKOUT_TEMPLATES.find((x) => x.id === id) ??
     QUICK_WORKOUT_TEMPLATES.find((q) => q.id === "push")!;
   const last = g?.lastWorkoutSplit ?? "Unknown";
-  const base: ParsedModel = {
+  const exercises: SuggestNextWorkoutResponse["exercises"] = [...t.exercises].map((name) => ({
+    name,
+    sets: [
+      { weight: 20, reps: 10 },
+      { weight: 20, reps: 10 },
+      { weight: 20, reps: 10 },
+    ],
+    decision: "maintain",
+    decision_label: DEFAULT_DECISION_LABEL.maintain,
+    reason: cap(
+      "Picked to satisfy split continuity. Match loads to your log and equipment.",
+      MAX_EXERCISE_REASON,
+    ),
+  }));
+
+  return {
     title: `${t.label} (split guard)`,
     session_type: "Normal progression",
+    confidence: 28,
     reason: cap(
       `Your last session was ${String(last)}. This follow-up is ${t.label} so the same pattern is not repeated within 48h.`,
       MAX_LINE,
     ),
-    exercises: [...t.exercises].map((name) => ({
-      name,
-      reason: cap(
-        "Picked to satisfy split continuity. Match loads to your log and equipment.",
-        MAX_EXERCISE_REASON,
-      ),
-      sets: [
-        { weight: 20, reps: 10 },
-        { weight: 20, reps: 10 },
-        { weight: 20, reps: 10 },
-      ],
-      decision: "maintain" as const,
-      decision_label: DEFAULT_DECISION_LABEL.maintain,
-    })),
+    training_signals: {
+      split: t.label,
+      fatigue: input.trainingSignals?.fatigueSignal ?? "unknown",
+      volume_trend: input.trainingSignals?.volumeTrend ?? "unknown",
+      strategy: "Split continuity fallback",
+    },
+    insights: [],
+    exercises,
     warnings: [
       "Split continuity guard: the model repeated your last training split, so a template from your preferred alternatives was used. Adjust weights before training.",
     ],
   };
-  return finalizeResponse(base, input);
 }
 
-async function openAiSuggestChat(
-  apiKey: string,
-  systemContent: string,
-  firstUser: string,
-  followUp?: { assistantJson: string; userRetry: string },
-): Promise<string | null> {
-  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
-    { role: "system", content: systemContent },
-    { role: "user", content: firstUser },
-  ];
-  if (followUp) {
-    messages.push(
-      { role: "assistant", content: followUp.assistantJson },
-      { role: "user", content: followUp.userRetry },
-    );
-  }
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      temperature: 0.3,
-      response_format: { type: "json_object" },
-      messages,
-    }),
-  });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    console.error("[ai-coach] OpenAI HTTP error", res.status, errText);
-    return null;
-  }
-  const data = (await res.json()) as {
-    choices?: { message?: { content?: string | null } }[];
-  };
-  const content = data.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) {
-    console.error("[ai-coach] OpenAI empty content");
-    return null;
-  }
-  return content;
-}
-
-function parseAndFinalize(content: string, input: AiCoachRequestPayload) {
+function parseAndFinalize(
+  content: string,
+  input: AiCoachRequestPayload,
+  structure: ReturnType<typeof selectWorkoutStructure>,
+  runtime: EngineRuntimeContext,
+  loadManagement?: LoadManagementState,
+) {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stripJsonFence(content));
@@ -1075,14 +971,167 @@ function parseAndFinalize(content: string, input: AiCoachRequestPayload) {
   }
   const loose = parseModelLoose(parsed);
   if (!loose) return null;
-  return finalizeResponse(loose, input);
+  return finalizeResponse(loose, input, structure, runtime, loadManagement);
+}
+
+function coachTemplateSuggestion(input: AiCoachRequestPayload): SuggestNextWorkoutResponse {
+  const lang = input.language ?? "en";
+  const ru = lang === "ru";
+  const preferred =
+    input.aiDecisionContext?.splitContinuityGuard?.preferredNextSplits?.[0] ?? "Push";
+  const split = preferred === "Pull" || preferred === "Legs" ? preferred : "Push";
+  const used = new Set<string>();
+  const names = getWorkoutSkeleton(split).map((slot) => {
+    const name = pickExerciseForSlot(slot, used);
+    used.add(name);
+    return name;
+  });
+  const baselines = new Map(
+    (input.trainingSignals?.exerciseBaselines ?? []).map((b) => [normalizeExerciseName(b.name), b]),
+  );
+  const fatigue = input.trainingSignals?.fatigueSignal ?? "unknown";
+  const targetSetCount = fatigue === "high" ? 2 : 3;
+
+  const exercises: SuggestNextWorkoutResponse["exercises"] = names.map((name, idx) => {
+    const base = baselines.get(normalizeExerciseName(name));
+    const last = base?.latestSets?.[0];
+    const w = last ? Math.max(0, Number(last.weight) || 0) : 20;
+    const r = last ? Math.max(0, Math.round(Number(last.reps) || 0)) : 10;
+    const sets = Array.from({ length: targetSetCount }, () => ({ weight: w, reps: r }));
+
+    // Simple template progression: first 2 exercises +1 rep.
+    const shouldInc = idx < 2;
+    const finalSets = shouldInc ? sets.map((s) => ({ ...s, reps: s.reps + 1 })) : sets;
+    return {
+      name,
+      sets: finalSets,
+      decision: shouldInc ? "increase" : "maintain",
+      decision_label: shouldInc ? (ru ? "+1 повторение" : "+1 rep") : (ru ? "Стабильная нагрузка" : "Maintain"),
+      reason: ru ? "Шаблонная тренировка: простая прогрессия по повторениям." : "Template session: simple rep progression.",
+    };
+  });
+
+  const out: SuggestNextWorkoutResponse = {
+    title: split,
+    session_type: "Normal progression",
+    confidence: 62,
+    reason: ru
+      ? "Тренировка по каркасу: стабильная структура и простая прогрессия в ключевых упражнениях."
+      : "Coach skeleton session: stable structure with simple progression on key lifts.",
+    training_signals: {
+      split,
+      fatigue,
+      volume_trend: "unknown",
+      strategy: ru ? "Каркас + базовая прогрессия" : "Skeleton + basic progression",
+    },
+    insights: [],
+    exercises,
+    warnings: [],
+  };
+  return out;
+}
+
+function attachDecisionTraceDev(
+  result: SuggestNextWorkoutResponse,
+  runtime: EngineRuntimeContext,
+): SuggestNextWorkoutResponse {
+  if (process.env.NODE_ENV === "production") return result;
+  if (!result.aiDebug) return result;
+  return {
+    ...result,
+    aiDebug: {
+      ...result.aiDebug,
+      decisionTrace: {
+        traceId: runtime.trace.traceId,
+        entries: runtime.trace.entries,
+      },
+    },
+  };
 }
 
 export async function fetchSuggestNextWorkoutFromOpenAI(
   input: AiCoachRequestPayload,
   apiKey: string,
 ): Promise<SuggestNextWorkoutResponse | null> {
+  if (input.aiMode === "coach_recommended") {
+    // Coach mode is template-driven: main workout is local; insights use the insight pass.
+    return enrichSuggestNextWorkoutInsights(coachTemplateSuggestion(input), input, apiKey);
+  }
   const payload = normalizeSuggestPayload(input);
+  const runtime = await buildEngineRuntimeContextWithMemory(payload.aiDecisionContext);
+  const adaptation = evaluateTrainingAdaptation(runtime);
+  addTrace(runtime, {
+    engine: "TrainingAdaptationEngine",
+    entity: "training_adaptation",
+    decision: "evaluated",
+    reasons: [
+      adaptation.fatigueAccumulation ? "fatigueAccumulation" : "fatigueAccumulation:false",
+      `stagnatingExercises:${adaptation.stagnatingExercises.length}`,
+      `recommendedAdjustments:${adaptation.recommendedAdjustments.length}`,
+    ],
+  });
+  const loadManagement = evaluateLoadManagement(runtime, adaptation);
+  addTrace(runtime, {
+    engine: "LoadManagementEngine",
+    entity: "load_management",
+    decision: "evaluated",
+    reasons: [
+      `weeklyLoadStatus:${loadManagement.weeklyLoadStatus}`,
+      `recommendedAction:${loadManagement.recommendedAction}`,
+      `volumeMultiplier:${loadManagement.volumeMultiplier}`,
+      `intensityMultiplier:${loadManagement.intensityMultiplier}`,
+    ],
+  });
+  // Build an exercise catalog for deterministic selection.
+  // Include: favorites, recent workout exercise names, and metadata starter list (for role coverage).
+  // Dedupe by normalized exercise name.
+  const rawCatalog = [
+    ...(payload.favorites ?? []).map((f) => ({
+      id: "",
+      name: f.name,
+      muscleGroup: f.muscleGroup,
+      equipment: f.equipment,
+      isFavorite: true,
+      createdAt: "",
+      updatedAt: "",
+    })),
+    ...((payload.aiDecisionContext?.recentWorkouts ?? [])
+      .flatMap((w) => w.exercises.map((e) => e.name))
+      .map((name) => ({
+        id: "",
+        name,
+        muscleGroup: undefined,
+        equipment: undefined,
+        createdAt: "",
+        updatedAt: "",
+      }))),
+    ...EXERCISE_METADATA_V1.map((m) => ({
+      id: "",
+      name: m.name,
+      muscleGroup: m.primaryMuscleGroup,
+      equipment: m.equipmentTags[0],
+      createdAt: "",
+      updatedAt: "",
+    })),
+  ];
+  const catalog = (() => {
+    const seen = new Set<string>();
+    const out: typeof rawCatalog = [];
+    for (const ex of rawCatalog) {
+      const k = normalizeExerciseName(ex.name);
+      if (!k) continue;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(ex);
+    }
+    return out;
+  })();
+  const structure = selectWorkoutStructure({
+    runtime,
+    catalog,
+    constraints: {},
+  });
+  const promptPayload = { ...payload, selectedStructure: structure };
   const modeBlock =
     payload.aiMode === "coach_recommended"
       ? MODE_COACH_RECOMMENDED
@@ -1090,11 +1139,17 @@ export async function fetchSuggestNextWorkoutFromOpenAI(
   const systemContent = `${systemPrompt}\n\n${modeBlock}`;
   const user = `The JSON payload includes aiMode, aiDecisionContext, trainingSignals, trainingContext, recentSessions, exerciseStats, exerciseProgression, periodization, weeklyMuscleVolume, muscleVolumeTrend, muscleVolumeHistory, muscleHypertrophyRanges, muscleProgressScore, laggingMuscleGroups, stagnatingExercises, laggingInterventionBlockers, muscleProgressHistory, quickTemplates, and more. OBEY MODE and output only the required JSON.
 
-${JSON.stringify(payload)}`;
+${JSON.stringify({
+  aiDecisionContext: promptPayload.aiDecisionContext,
+  selectedStructure: promptPayload.selectedStructure,
+  coachMemory: runtime.coachMemory ?? { exerciseMemories: {} },
+  adaptation,
+  loadManagement,
+})}`;
 
   const content1 = await openAiSuggestChat(apiKey, systemContent, user);
   if (!content1) return null;
-  const result1 = parseAndFinalize(content1, payload);
+  const result1 = parseAndFinalize(content1, payload, structure, runtime, loadManagement);
   if (!result1) return null;
 
   if (!responseViolatesSplitGuard(result1, payload)) {
@@ -1112,7 +1167,8 @@ ${JSON.stringify(payload)}`;
         });
       }
     }
-    return withSuggestNextDevDebug(result1, payload);
+    const enriched = await enrichSuggestNextWorkoutInsights(result1, payload, apiKey);
+    return attachDecisionTraceDev(enriched, runtime);
   }
 
   if (process.env.NODE_ENV === "development") {
@@ -1141,12 +1197,13 @@ Return a complete NEW JSON object using the same schema. Rewrite title, exercise
   });
 
   if (content2) {
-    const result2 = parseAndFinalize(content2, payload);
+    const result2 = parseAndFinalize(content2, payload, structure, runtime, loadManagement);
     if (result2 && !responseViolatesSplitGuard(result2, payload)) {
       if (process.env.NODE_ENV === "development") {
         console.log("[ai-coach] split guard: second response accepted");
       }
-      return withSuggestNextDevDebug(result2, payload);
+      const enriched = await enrichSuggestNextWorkoutInsights(result2, payload, apiKey);
+      return attachDecisionTraceDev(enriched, runtime);
     }
   }
 
@@ -1156,5 +1213,6 @@ Return a complete NEW JSON object using the same schema. Rewrite title, exercise
     );
   }
   const fallback = buildSplitGuardFallbackSuggestion(payload);
-  return withSuggestNextDevDebug(fallback, payload);
+  const enrichedFallback = await enrichSuggestNextWorkoutInsights(fallback, payload, apiKey);
+  return attachDecisionTraceDev(enrichedFallback, runtime);
 }

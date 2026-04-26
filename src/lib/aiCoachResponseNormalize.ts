@@ -1,3 +1,4 @@
+import { cap } from "@/lib/string/cap";
 import { inferDecisionFromReason } from "@/lib/aiCoachDecisionInfer";
 import { buildDisplayTrainingSignals } from "@/lib/aiTrainingSignalsFormat";
 import { normalizeExerciseName } from "@/lib/exerciseName";
@@ -50,12 +51,6 @@ function isVolume(s: string): s is VolumeTrend {
 }
 function isDecision(s: string): s is ExerciseDecision {
   return (DECISIONS as string[]).includes(s);
-}
-
-function cap(s: string, n: number): string {
-  const t = s.trim();
-  if (t.length <= n) return t;
-  return `${t.slice(0, n - 1).trimEnd()}…`;
 }
 
 function parseSets(arr: unknown): { weight: number; reps: number }[] | null {
@@ -155,26 +150,31 @@ function normalizeInsights(raw: unknown): AiInsight[] {
     if (!it || typeof it !== "object") continue;
     const o = it as Record<string, unknown>;
     const typeRaw = o.type;
-    if (typeof typeRaw !== "string") continue;
-    const type =
-      typeRaw === "warning" ? "risk" : typeRaw;
-    if (
-      !(
-        type === "progress" ||
-        type === "fatigue" ||
-        type === "balance" ||
-        type === "risk" ||
-        type === "opportunity"
-      )
-    ) {
-      continue;
+    let type: AiInsight["type"] = "opportunity";
+    if (typeof typeRaw === "string") {
+      const t = typeRaw === "warning" ? "risk" : typeRaw;
+      if (
+        t === "progress" ||
+        t === "fatigue" ||
+        t === "balance" ||
+        t === "risk" ||
+        t === "opportunity"
+      ) {
+        type = t;
+      }
     }
     if (typeof o.title !== "string" || !o.title.trim()) continue;
-    if (typeof o.text !== "string" || !o.text.trim()) continue;
+    const textRaw =
+      typeof o.text === "string" && o.text.trim()
+        ? o.text.trim()
+        : typeof o.description === "string" && o.description.trim()
+          ? o.description.trim()
+          : "";
+    if (!textRaw) continue;
     out.push({
       type,
       title: cap(o.title.trim(), 120),
-      text: cap(o.text.trim(), 120),
+      text: cap(textRaw, 320),
     });
   }
   return out.slice(0, 3);
@@ -222,6 +222,52 @@ export function normalizeSuggestNextResponseClient(
     ? o.warnings.filter((w) => typeof w === "string" && w.trim()) as string[]
     : [];
 
+  const recoverySummaryRaw = o.recoverySummary;
+  const recoverySummary: SuggestNextWorkoutResponse["recoverySummary"] | undefined =
+    Array.isArray(recoverySummaryRaw)
+      ? recoverySummaryRaw
+          .filter((x) => x && typeof x === "object")
+          .map((x) => x as Record<string, unknown>)
+          .map((r) => {
+            const muscle = typeof r.muscle === "string" ? r.muscle : "";
+            const statusRaw = r.status;
+            const status: NonNullable<SuggestNextWorkoutResponse["recoverySummary"]>[number]["status"] =
+              statusRaw === "ready" ||
+              statusRaw === "recovering" ||
+              statusRaw === "fatigued" ||
+              statusRaw === "unknown"
+                ? statusRaw
+                : "unknown";
+            const score =
+              typeof r.score === "number" && Number.isFinite(r.score) ? r.score : undefined;
+            return { muscle, status, score };
+          })
+          .filter((r) => Boolean(r.muscle))
+      : undefined;
+
+  const volumeSummaryRaw = o.volumeSummary;
+  const volumeSummary: SuggestNextWorkoutResponse["volumeSummary"] | undefined =
+    Array.isArray(volumeSummaryRaw)
+      ? volumeSummaryRaw
+          .filter((x) => x && typeof x === "object")
+          .map((x) => x as Record<string, unknown>)
+          .map((r) => {
+            const muscle = typeof r.muscle === "string" ? r.muscle : "";
+            const statusRaw = r.status;
+            const status: NonNullable<SuggestNextWorkoutResponse["volumeSummary"]>[number]["status"] =
+              statusRaw === "low" ||
+              statusRaw === "optimal" ||
+              statusRaw === "high" ||
+              statusRaw === "unknown"
+                ? statusRaw
+                : "unknown";
+            const sets =
+              typeof r.sets === "number" && Number.isFinite(r.sets) ? r.sets : undefined;
+            return { muscle, status, sets };
+          })
+          .filter((r) => Boolean(r.muscle))
+      : undefined;
+
   const exercises = normalizeExercisesClient(o.exercises);
   if (!exercises) {
     return {
@@ -235,6 +281,8 @@ export function normalizeSuggestNextResponseClient(
       warnings: warnings.length
         ? warnings
         : ["The suggestion had no valid exercises; check your log and retry."],
+      recoverySummary,
+      volumeSummary,
     };
   }
 
@@ -249,7 +297,25 @@ export function normalizeSuggestNextResponseClient(
     rawDebug && typeof rawDebug === "object"
       ? (() => {
           const d = rawDebug as Record<string, unknown>;
+          const mode =
+            d.mode === "history" || d.mode === "coach" ? d.mode : undefined;
+          const generationSource =
+            d.generationSource === "adaptive_history" ||
+            d.generationSource === "coach_skeleton"
+              ? d.generationSource
+              : undefined;
+          const insightSource =
+            d.insightSource === "llm" || d.insightSource === "fallback"
+              ? d.insightSource
+              : undefined;
+          const insightWarnings = Array.isArray(d.insightWarnings)
+            ? d.insightWarnings.filter((x): x is string => typeof x === "string")
+            : undefined;
           return {
+            mode,
+            generationSource,
+            insightSource,
+            insightWarnings,
             lastWorkoutTitle:
               typeof d.lastWorkoutTitle === "string" ? d.lastWorkoutTitle : "—",
             performedAt:
@@ -305,6 +371,8 @@ export function normalizeSuggestNextResponseClient(
     exercises,
     warnings,
     aiDebug,
+    recoverySummary,
+    volumeSummary,
   };
 }
 

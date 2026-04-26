@@ -1,9 +1,9 @@
 import type {
   AdaptiveVolumePlanForAi,
+  CoachingContextSignals,
   SplitSelectionPlanForAi,
   TrainingPhaseStateForAi,
-  TrainingSignalEngineOutput,
-  TrainingSignals,
+  SessionSummarySignals,
 } from "@/types/aiCoach";
 import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 
@@ -25,7 +25,7 @@ function uniq<T>(arr: T[]): T[] {
 
 function muscleRecoveryScore(
   muscle: PrimaryMuscleGroup,
-  muscleRecovery: TrainingSignalEngineOutput["muscleRecovery"],
+  muscleRecovery: CoachingContextSignals["muscleRecovery"],
 ): { delta: number; reason?: string } {
   const row = muscleRecovery.find((r) => r.muscleGroup === muscle);
   if (!row) return { delta: 0 };
@@ -50,8 +50,8 @@ function volumePlanDelta(
 
 function recoveryStatusForMuscle(
   muscle: PrimaryMuscleGroup,
-  muscleRecovery: TrainingSignalEngineOutput["muscleRecovery"],
-): TrainingSignalEngineOutput["muscleRecovery"][number]["status"] | null {
+  muscleRecovery: CoachingContextSignals["muscleRecovery"],
+): CoachingContextSignals["muscleRecovery"][number]["status"] | null {
   const row = muscleRecovery.find((r) => r.muscleGroup === muscle);
   return row?.status ?? null;
 }
@@ -59,7 +59,7 @@ function recoveryStatusForMuscle(
 function laggingDelta(
   muscles: PrimaryMuscleGroup[],
   laggingMuscles: { laggingMuscleGroups: PrimaryMuscleGroup[] },
-  fatigueSignals: TrainingSignals,
+  fatigueSignals: SessionSummarySignals,
 ): { delta: number; reasons: string[] } {
   if (fatigueSignals.fatigueSignal === "high") return { delta: 0, reasons: [] };
   const lagging = new Set(laggingMuscles.laggingMuscleGroups ?? []);
@@ -76,7 +76,7 @@ function phaseDelta(
   phase: TrainingPhaseStateForAi["phase"],
   split: Exclude<SplitLabel, "Unknown">,
   muscles: PrimaryMuscleGroup[],
-  muscleRecovery: TrainingSignalEngineOutput["muscleRecovery"],
+  muscleRecovery: CoachingContextSignals["muscleRecovery"],
   volumePlan: AdaptiveVolumePlanForAi,
 ): { delta: number; reasons: string[] } {
   if (phase === "build") {
@@ -102,10 +102,10 @@ function phaseDelta(
 }
 
 function globalFatigueDelta(
-  fatigue: TrainingSignals["fatigueSignal"],
+  fatigue: SessionSummarySignals["fatigueSignal"],
   split: Exclude<SplitLabel, "Unknown">,
   muscles: PrimaryMuscleGroup[],
-  muscleRecovery: TrainingSignalEngineOutput["muscleRecovery"],
+  muscleRecovery: CoachingContextSignals["muscleRecovery"],
 ): { delta: number; reasons: string[] } {
   if (fatigue !== "high" && fatigue !== "moderate") return { delta: 0, reasons: [] };
 
@@ -130,7 +130,7 @@ function globalFatigueDelta(
 
 function splitHasFatiguedMuscle(
   split: Exclude<SplitLabel, "Unknown">,
-  muscleRecovery: TrainingSignalEngineOutput["muscleRecovery"],
+  muscleRecovery: CoachingContextSignals["muscleRecovery"],
 ): boolean {
   const muscles = SPLIT_MUSCLES[split] ?? [];
   return muscles.some(
@@ -140,10 +140,10 @@ function splitHasFatiguedMuscle(
 
 export function buildSplitSelectionPlan(input: {
   preferredNextSplits: ("Push" | "Pull" | "Legs" | "Full")[];
-  muscleRecovery: TrainingSignalEngineOutput["muscleRecovery"];
+  muscleRecovery: CoachingContextSignals["muscleRecovery"];
   volumePlan: AdaptiveVolumePlanForAi;
   laggingMuscles: { laggingMuscleGroups: PrimaryMuscleGroup[] };
-  fatigueSignals: TrainingSignals;
+  fatigueSignals: SessionSummarySignals;
   trainingPhase: TrainingPhaseStateForAi;
 }): SplitSelectionPlanForAi {
   const candidates = (input.preferredNextSplits?.length

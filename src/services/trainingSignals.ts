@@ -1,3 +1,7 @@
+/**
+ * Session-level training summary: `computeTrainingSignals` → `SessionSummarySignals` / `TrainingSignals`.
+ * For the deeper coaching engine (trends, recovery, alerts), see `buildTrainingSignals` in `trainingSignalEngine.ts`.
+ */
 import { normalizeExerciseName } from "@/lib/exerciseName";
 import type { AthleteProfile } from "@/types/athleteProfile";
 import type { Exercise, WorkoutSession } from "@/types/trainingDiary";
@@ -227,6 +231,10 @@ export function buildAiTrainingContext(
   };
 }
 
+/**
+ * Session-level summary for AI Coach: title pattern, last-worked tags, volume trend, session-level fatigue
+ * heuristic, and exercise baselines. Distinct from `buildTrainingSignals` (coaching engine) in `trainingSignalEngine.ts`.
+ */
 export function computeTrainingSignals(
   rows: WorkoutSession[],
   catalog: Pick<Exercise, "name" | "muscleGroup">[],

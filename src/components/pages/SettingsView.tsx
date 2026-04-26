@@ -36,7 +36,7 @@ const phaseOptions: { value: TrainingPhase; label: string }[] = [
 const allTypes: ActionType[] = ["workout", "run", "reading", "project"];
 
 const profileLinkClass =
-  "flex min-h-11 w-full items-center justify-center rounded-xl border border-neutral-700 bg-neutral-900 py-3 text-center text-base font-medium text-neutral-200 transition active:opacity-90";
+  "flex min-h-11 w-full items-center justify-center rounded-2xl border border-neutral-800/90 bg-neutral-950/60 py-3 text-center text-base font-medium text-neutral-200 shadow-sm transition hover:border-neutral-600/50 active:opacity-90";
 
 const languageOptions: { value: AppLanguage; key: "lang_en" | "lang_ru" }[] = [
   { value: "en", key: "lang_en" },
@@ -71,7 +71,7 @@ export function SettingsView() {
 
   if (loading || !settings || !profile) {
     return (
-      <main>
+      <main className="mx-auto flex min-h-[30vh] w-full min-w-0 max-w-full flex-col justify-center pb-32">
         <p className="text-sm text-neutral-500">{t("loading_settings")}</p>
       </main>
     );
@@ -98,21 +98,21 @@ export function SettingsView() {
   }
 
   return (
-    <main className="flex flex-col gap-6">
-      <header>
+    <main className="mx-auto flex w-full min-w-0 max-w-full flex-col space-y-6 pb-32">
+      <header className="space-y-1">
         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
           Life Execution Panel
         </p>
-        <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-50">
+        <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
           {t("settings_title")}
         </h1>
-        <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+        <p className="text-sm text-neutral-500">
           {t("settings_subtitle")}
         </p>
       </header>
 
       {error ? (
-        <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+        <p className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-200">
           {error}
         </p>
       ) : null}
@@ -146,7 +146,7 @@ export function SettingsView() {
         }}
       >
         <section className="flex flex-col gap-5">
-          <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
             {t("general_section")}
           </h2>
           <Select
@@ -204,7 +204,7 @@ export function SettingsView() {
             }
           />
           <div className="flex flex-col gap-2">
-            <span className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
+            <span className="text-sm font-medium text-neutral-200">
               Preferred action types
             </span>
             <div className="grid grid-cols-2 gap-2">
@@ -215,10 +215,10 @@ export function SettingsView() {
                     key={t}
                     type="button"
                     onClick={() => toggleType(t)}
-                    className={`min-h-[48px] rounded-lg border text-sm font-semibold capitalize ${
+                    className={`min-h-[48px] rounded-2xl border text-sm font-semibold capitalize ${
                       on
-                        ? "border-neutral-900 bg-neutral-900 text-white dark:border-neutral-100 dark:bg-neutral-100 dark:text-neutral-900"
-                        : "border-neutral-300 bg-white text-neutral-700 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-200"
+                        ? "border-violet-500/50 bg-violet-500/15 text-neutral-100"
+                        : "border-neutral-800 bg-neutral-950/40 text-neutral-300 active:opacity-90"
                     }`}
                   >
                     {t}
@@ -229,11 +229,11 @@ export function SettingsView() {
           </div>
         </section>
 
-        <section className="flex flex-col gap-4 border-t border-neutral-200 pt-8 dark:border-neutral-800">
-          <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+        <section className="flex flex-col gap-4 border-t border-neutral-800 pt-8">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
             Athlete profile
           </h2>
-          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+          <p className="text-sm text-neutral-500">
             Used for AI workout suggestions. Edit anytime.
           </p>
           <Select
@@ -250,10 +250,10 @@ export function SettingsView() {
               }))
             }
           />
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          <p className="text-xs text-neutral-500">
             {t("recovery_capacity_hint")}
           </p>
-          <div className="rounded-xl border border-neutral-800 bg-neutral-950/50 px-3 py-3 text-sm text-neutral-300">
+          <div className="rounded-2xl border border-neutral-800/90 bg-neutral-950/50 px-4 py-3 text-sm text-neutral-300">
             <p>Goal: {formatTrainingGoalLabel(mergedAthlete.goal)}</p>
             <p className="mt-1">
               Experience: {formatExperienceLabel(mergedAthlete.experience)}
@@ -275,12 +275,12 @@ export function SettingsView() {
           </Link>
         </section>
 
-        <section className="flex flex-col gap-5 border-t border-neutral-200 pt-8 dark:border-neutral-800">
+        <section className="flex flex-col gap-5 border-t border-neutral-800 pt-8">
           <div>
-            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
               Training context
             </h2>
-            <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+            <p className="mt-1 text-sm text-neutral-500">
               Used when generating daily plans: PCT and notes inform the
               template-based planner.
             </p>
@@ -320,8 +320,8 @@ export function SettingsView() {
           />
         </section>
 
-        <section className="flex flex-col gap-5 border-t border-neutral-200 pt-8 dark:border-neutral-800">
-          <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+        <section className="flex flex-col gap-5 border-t border-neutral-800 pt-8">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
             API
           </h2>
           <TextField
@@ -332,9 +332,9 @@ export function SettingsView() {
               setOverrides((o) => ({ ...o, backendUrl: e.target.value }))
             }
           />
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          <p className="text-xs text-neutral-500">
             When set, plan generation POSTs to{" "}
-            <code className="rounded bg-neutral-100 px-1 py-0.5 text-[11px] dark:bg-neutral-900">
+            <code className="rounded-md border border-neutral-800 bg-neutral-950/80 px-1.5 py-0.5 text-[11px] text-neutral-300">
               {"{base}"}/api/generate-plan
             </code>
             . Leave empty to use this app&apos;s Next route.
@@ -346,11 +346,11 @@ export function SettingsView() {
         </Button>
       </form>
 
-      <section className="mt-2 flex flex-col gap-3 rounded-xl border-2 border-red-600/40 bg-red-500/[0.04] p-4 dark:border-red-500/50 dark:bg-red-950/20">
-        <h2 className="text-sm font-semibold text-red-700 dark:text-red-300">
+      <section className="mt-2 flex flex-col gap-3 rounded-2xl border border-red-500/30 bg-red-500/[0.06] p-5">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-red-300/90">
           Danger zone
         </h2>
-        <p className="text-sm text-red-800/90 dark:text-red-200/90">
+        <p className="text-sm text-red-200/90">
           Permanently removes all saved workout sessions on this device. Exercises
           (including favorites) and app settings are not changed.
         </p>
@@ -382,7 +382,7 @@ export function SettingsView() {
               setClearingWorkouts(false);
             }
           }}
-          className="w-full min-h-11 rounded-xl border-2 border-red-600 bg-transparent px-4 py-2.5 text-sm font-medium text-red-600 transition active:opacity-80 disabled:opacity-50 dark:border-red-500 dark:text-red-400"
+          className="w-full min-h-11 rounded-2xl border border-red-500/50 bg-red-500/5 px-4 py-2.5 text-sm font-medium text-red-300 transition active:opacity-80 disabled:opacity-50"
         >
           {clearingWorkouts ? "Clearing…" : "Clear workout history"}
         </button>

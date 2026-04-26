@@ -21,21 +21,21 @@ export function TodayView() {
     useTodayPlan();
 
   return (
-    <main className="flex flex-col gap-6">
+    <main className="mx-auto flex w-full min-w-0 max-w-full flex-col space-y-6 pb-32">
       <header className="space-y-1">
         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
           Life Execution Panel
         </p>
-        <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-50">
+        <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
           Today
         </h1>
-        <p className="text-sm text-neutral-600 dark:text-neutral-400">
+        <p className="text-sm text-neutral-500">
           {loading ? "Loading calendar…" : formatHeaderDate(date)}
         </p>
       </header>
 
       {error ? (
-        <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+        <p className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-200">
           {error}
         </p>
       ) : null}
@@ -48,7 +48,7 @@ export function TodayView() {
         >
           {generating ? "Generating…" : "Generate today plan"}
         </Button>
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+        <p className="text-xs text-neutral-500">
           Plan → do → log → learn → next plan. History informs the next generation
           once the server model is connected.
         </p>
@@ -64,7 +64,7 @@ export function TodayView() {
       ) : (
         <section className="flex flex-col gap-4">
           {plan.note ? (
-            <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-800 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-200">
+            <div className="rounded-2xl border border-neutral-800 bg-neutral-950/50 p-4 text-sm text-neutral-200">
               {plan.note}
             </div>
           ) : null}

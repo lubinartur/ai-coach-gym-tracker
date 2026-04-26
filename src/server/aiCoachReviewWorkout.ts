@@ -27,6 +27,11 @@ The JSON includes "language": "en". You MUST write verdict, summary, all bullet 
 - "grade" must be one of: A+, A, B+, B, C, D — and must **roughly** match the score (e.g. 84 with B+).
 - "verdict" is 1–2 **short, human** sentences: the main takeaway (quality, one caveat if any). It is the headline, not a repeat of every bullet.
 
+## Duration (important)
+- If completedSession.durationMin is present and is **less than 5 minutes**, treat it as unreliable test/manual-entry data.
+- In that case: DO NOT generate any "very short session" / "too short" duration critique and DO NOT penalize the score for duration.
+- Only consider duration-based feedback when durationMin is **5 minutes or more**.
+
 Return ONLY valid JSON (no markdown):
 
 {
@@ -67,6 +72,11 @@ const systemPromptRu = `Ты тренер по силе: коротко подв
 - Диапазоны: 90–100 отлично; 80–89 сильно; 70–79 хорошо, но есть внимание; 60–69 смешанно; ниже 60 слабо/восстановление.
 - "grade": одна из: A+, A, B+, B, C, D — должна **примерно** согласовываться с числом "score" (например 84 и B+).
 - "verdict" — 1–2 короткие фразы-итог: людьми, главный вывод, одна оговорка при необходимости.
+
+## Длительность (важно)
+- Если completedSession.durationMin есть и она **меньше 5 минут**, считай это тестовой/ручной записью и не делай выводов по длительности.
+- В этом случае: НЕ пиши замечания "слишком короткая тренировка" и НЕ штрафуй score за длительность.
+- Анализ по длительности применяй только если durationMin **5 минут или больше**.
 
 Верни ТОЛЬКО валидный JSON (без markdown):
 

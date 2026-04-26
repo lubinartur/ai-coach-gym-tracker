@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, ChevronRight, Dumbbell, Flame, Layers, Play, Repeat2, Trash2 } from "lucide-react";
 import { ExerciseSetRow } from "@/components/workout/ExerciseSetRow";
 import { WorkoutReviewContent } from "@/components/workout/WorkoutReviewContent";
 import { Button } from "@/components/ui/Button";
@@ -26,7 +27,6 @@ import { buildWorkoutReviewRequestPayload } from "@/services/workoutReviewContex
 import type { WorkoutAiReview } from "@/types/aiCoach";
 import {
   formatWorkoutLastPerformed,
-  muscleLineForSession,
 } from "@/lib/workoutStartScreen";
 import { ExerciseRestTimer } from "@/components/workout/ExerciseRestTimer";
 import { useExerciseRestTimer } from "@/hooks/useExerciseRestTimer";
@@ -39,6 +39,11 @@ import {
   getRecentExerciseNamesUsed,
   normalizeExerciseName,
 } from "@/services/exerciseStats";
+import { useI18n } from "@/i18n/LocaleContext";
+import type { AiCoachMode, AiDecisionContext, SuggestNextWorkoutResponse } from "@/types/aiCoach";
+import { AiCoachSuggestionResult } from "@/components/ai/AiCoachSuggestionResult";
+import { normalizeSuggestNextResponseClient } from "@/lib/aiCoachResponseNormalize";
+import { buildAiCoachRequestPayload } from "@/services/aiCoachContext";
 
 type WorkoutMode = "idle" | "active";
 
@@ -61,6 +66,7 @@ const TEMPLATE_SUBLINE_CLASS = "mt-1.5 break-words text-sm leading-snug text-neu
 const TEMPLATE_META_CLASS = "mt-1 text-xs tabular-nums text-neutral-600";
 
 export function WorkoutView() {
+  const { t, locale } = useI18n();
   const [mode, setMode] = useState<WorkoutMode>("idle");
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [loadingExercises, setLoadingExercises] = useState(true);
@@ -91,6 +97,26 @@ export function WorkoutView() {
   const [defaultRestSec, setDefaultRestSec] = useState(90);
   const { rest, startRest, clearRest, onAdd30, onSub30 } =
     useExerciseRestTimer(defaultRestSec);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiResult, setAiResult] = useState<SuggestNextWorkoutResponse | null>(null);
+  const [aiDecisionContext, setAiDecisionContext] =
+    useState<AiDecisionContext | null>(null);
+  const [aiMode, setAiMode] = useState<AiCoachMode>("history_based");
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+
+  function setAiModeAndResetResult(next: AiCoachMode) {
+    setAiMode(next);
+    // Safer UX: switching modes invalidates the current recommendation.
+    if (aiResult) {
+      setAiResult(null);
+      setAiError(null);
+      setAiDecisionContext(null);
+    } else if (aiError) {
+      // Clear stale errors when user changes mode.
+      setAiError(null);
+    }
+  }
 
   const addExerciseFlowRef = useRef<HTMLDivElement | null>(null);
   const aiDraftAppliedRef = useRef(false);
@@ -228,13 +254,14 @@ export function WorkoutView() {
     [workoutExercises, editingExerciseId],
   );
 
-  const quickStartMuscleLine = useMemo(
-    () =>
-      mostRecentSession
-        ? muscleLineForSession(mostRecentSession, exercises)
-        : "",
-    [mostRecentSession, exercises],
-  );
+  // (kept for potential future use on the Workout dashboard)
+  // const quickStartMuscleLine = useMemo(
+  //   () =>
+  //     mostRecentSession
+  //       ? muscleLineForSession(mostRecentSession, exercises)
+  //       : "",
+  //   [mostRecentSession, exercises],
+  // );
 
   const quickStartLastText = useMemo(
     () =>
@@ -404,7 +431,7 @@ export function WorkoutView() {
     });
   }
 
-  async function hydrateLastTime(localExerciseId: string, name: string) {
+  const hydrateLastTime = useCallback(async (localExerciseId: string, name: string) => {
     const perf = await getLastExercisePerformance(name);
     if (!perf) return;
     setLastByExerciseId((prev) => ({
@@ -414,21 +441,10 @@ export function WorkoutView() {
         sets: perf.sets.map((s) => ({ weight: s.weight, reps: s.reps })),
       },
     }));
-  }
+  }, []);
 
-  /** Apply AI suggestion from Progress (sessionStorage) once catalog is ready. */
-  useEffect(() => {
-    if (aiDraftAppliedRef.current) return;
-    if (loadingExercises) return;
-    let data: AiWorkoutDraftPayload;
-    try {
-      const raw = sessionStorage.getItem(AI_WORKOUT_DRAFT_KEY);
-      if (!raw) return;
-      sessionStorage.removeItem(AI_WORKOUT_DRAFT_KEY);
-      data = JSON.parse(raw) as AiWorkoutDraftPayload;
-    } catch {
-      return;
-    }
+  const applyAiDraftPayload = useCallback((data: AiWorkoutDraftPayload) => {
+    // AI recommendations should land in a "prepared" edit state. Timer starts only when user presses Start.
     if (!data.exercises?.length) return;
     aiDraftAppliedRef.current = true;
     const catalog = exercises;
@@ -464,14 +480,72 @@ export function WorkoutView() {
       setPickerCategory(null);
       setCustomExerciseName("");
       setLastByExerciseId({});
-      setStartedAt(new Date().toISOString());
+      setStartedAt(null);
       setElapsedSec(0);
       setEditingExerciseId(null);
       for (const ex of wex) {
         void hydrateLastTime(ex.id, ex.name);
       }
     });
-  }, [loadingExercises, exercises]);
+  }, [exercises, hydrateLastTime]);
+
+  /** Apply AI suggestion payload (sessionStorage) once catalog is ready. */
+  useEffect(() => {
+    if (aiDraftAppliedRef.current) return;
+    if (loadingExercises) return;
+    let data: AiWorkoutDraftPayload;
+    try {
+      const raw = sessionStorage.getItem(AI_WORKOUT_DRAFT_KEY);
+      if (!raw) return;
+      sessionStorage.removeItem(AI_WORKOUT_DRAFT_KEY);
+      data = JSON.parse(raw) as AiWorkoutDraftPayload;
+    } catch {
+      return;
+    }
+    applyAiDraftPayload(data);
+  }, [loadingExercises, applyAiDraftPayload]);
+
+  async function requestNextWorkout() {
+    setAiError(null);
+    setAiResult(null);
+    setAiDecisionContext(null);
+    setAiLoading(true);
+    try {
+      const payload = await buildAiCoachRequestPayload({ aiMode });
+      const res = await fetch("/api/ai-coach/suggest-next-workout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(t("error_suggestion"));
+      }
+      setAiDecisionContext(payload.aiDecisionContext);
+      const parsed: unknown = JSON.parse(text);
+      setAiResult(
+        normalizeSuggestNextResponseClient(parsed, payload.trainingSignals),
+      );
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : t("error_suggestion"));
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  function startSuggestedWorkout() {
+    if (!aiResult || aiResult.exercises.length === 0) return;
+    setAiDecisionContext(null);
+    const payload: AiWorkoutDraftPayload = {
+      title: aiResult.title.trim() || "Workout",
+      exercises: aiResult.exercises.map((e) => ({
+        name: e.name,
+        sets: e.sets.map((s) => ({ weight: s.weight, reps: s.reps })),
+      })),
+    };
+    applyAiDraftPayload(payload);
+    setAiResult(null);
+  }
 
   function startWorkoutFromTemplate(t: WorkoutQuickTemplate) {
     setFinishSummary(null);
@@ -481,31 +555,6 @@ export function WorkoutView() {
     const wex: WorkoutExercise[] = t.exercises.map((name) => ({
       id: createId(),
       name,
-      sets: [],
-    }));
-    setWorkoutExercises(wex);
-    setPickerOpen(false);
-    setPickerQuery("");
-    setPickerCategory(null);
-    setCustomExerciseName("");
-    setLastByExerciseId({});
-    setStartedAt(new Date().toISOString());
-    setElapsedSec(0);
-    setEditingExerciseId(null);
-    for (const ex of wex) {
-      void hydrateLastTime(ex.id, ex.name);
-    }
-  }
-
-  function startFromRecentSession(s: WorkoutSession) {
-    setFinishSummary(null);
-    setMode("active");
-    setTitle(s.title.trim() || "Workout");
-    setNotes("");
-    const wex: WorkoutExercise[] = s.exercises.map((ex) => ({
-      id: createId(),
-      ...(ex.exerciseId ? { exerciseId: ex.exerciseId } : {}),
-      name: ex.name,
       sets: [],
     }));
     setWorkoutExercises(wex);
@@ -743,14 +792,118 @@ export function WorkoutView() {
     "w-full min-h-11 rounded-xl border border-neutral-700 bg-neutral-900 py-3 text-center text-base font-medium text-neutral-200 transition active:opacity-90";
 
   return (
-    <main className="flex flex-col space-y-6">
+    <main className="flex flex-col space-y-6 pb-32">
       {mode === "idle" ? (
         <div className="mx-auto flex w-full min-w-0 max-w-full flex-col space-y-6">
           <header>
-            <h1 className="text-2xl font-semibold leading-tight text-neutral-50">
+            <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
               Workout
             </h1>
           </header>
+
+          {!finishSummary ? (
+            <section className="min-w-0">
+              <Card className="relative overflow-hidden !p-0">
+                <div className="absolute inset-0 bg-gradient-to-br from-violet-500/14 via-transparent to-transparent" />
+                <div className="relative p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                        {t("ai_coach_title")}
+                      </p>
+                      <p className="mt-1 text-base font-semibold text-neutral-100">
+                        {locale === "ru" ? "Рекомендация следующей тренировки" : "Next workout recommendation"}
+                      </p>
+                      <p className="mt-1 text-sm text-neutral-500">
+                        {aiMode === "history_based"
+                          ? locale === "ru"
+                            ? "Адаптируется под твою историю, усталость и объём."
+                            : "Adapts to your history, fatigue, and volume."
+                          : locale === "ru"
+                            ? "Структурная программа с понятным каркасом и прогрессией."
+                            : "A structured plan with a clear skeleton and progression."}
+                      </p>
+                    </div>
+                    <div
+                      className="shrink-0 rounded-2xl border border-neutral-800 bg-neutral-900/60 p-3 backdrop-blur"
+                      aria-hidden
+                    >
+                      <Dumbbell className="h-6 w-6 text-purple-500" strokeWidth={2} />
+                    </div>
+                  </div>
+
+                  <div
+                    className="mt-4 flex rounded-2xl border border-neutral-800 bg-neutral-950/70 p-1"
+                    role="group"
+                    aria-label={t("ai_coach_title")}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setAiModeAndResetResult("history_based")}
+                      disabled={aiLoading}
+                      className={
+                        "min-h-10 min-w-0 flex-1 rounded-xl px-2 text-center text-sm font-medium transition " +
+                        (aiMode === "history_based"
+                          ? "bg-neutral-800 text-neutral-100"
+                          : "text-neutral-500 hover:text-neutral-300")
+                      }
+                    >
+                      {t("ai_mode_history")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAiModeAndResetResult("coach_recommended")}
+                      disabled={aiLoading}
+                      className={
+                        "min-h-10 min-w-0 flex-1 rounded-xl px-2 text-center text-sm font-medium transition " +
+                        (aiMode === "coach_recommended"
+                          ? "bg-neutral-800 text-neutral-100"
+                          : "text-neutral-500 hover:text-neutral-300")
+                      }
+                    >
+                      {t("ai_mode_coach")}
+                    </button>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {!aiResult ? (
+                      <button
+                        type="button"
+                        onClick={() => void requestNextWorkout()}
+                        disabled={aiLoading}
+                        className={
+                          "flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl bg-purple-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-purple-500 active:opacity-90 " +
+                          (aiLoading ? "opacity-60" : "")
+                        }
+                      >
+                        <Play className="h-5 w-5" aria-hidden />
+                        {aiLoading
+                          ? t("thinking")
+                          : locale === "ru"
+                            ? "Получить рекомендацию"
+                            : "Get recommendation"}
+                      </button>
+                    ) : null}
+
+                    {aiError ? (
+                      <p className="text-sm text-red-400/90">{aiError}</p>
+                    ) : null}
+
+                    {aiResult ? (
+                      <div className="mt-1 min-w-0">
+                        <AiCoachSuggestionResult
+                          result={aiResult}
+                          decisionContext={aiDecisionContext}
+                          onStart={startSuggestedWorkout}
+                          variant="compact"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </Card>
+            </section>
+          ) : null}
 
           {finishSummary ? (
             <Card className="!space-y-0 !p-0 overflow-hidden">
@@ -797,65 +950,169 @@ export function WorkoutView() {
             </Card>
           ) : null}
 
+          {/* 2) CONTINUE / LAST WORKOUT (single card) */}
           {!lastSessionLoading && mostRecentSession ? (
             <section className="min-w-0">
-              <h2 className="text-sm font-medium text-neutral-400">Quick start</h2>
-              <div className="mt-2 rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-3">
-                <p className="text-base font-semibold text-neutral-100">
-                  {mostRecentSession.title.trim() || "Workout"}
-                </p>
-                <p className="mt-0.5 break-words text-sm text-neutral-500">
-                  {quickStartMuscleLine}
-                </p>
-                {quickStartLastText ? (
-                  <p className="mt-1 text-sm text-neutral-500">
-                    Last time: {quickStartLastText}
-                  </p>
-                ) : null}
-                <div className="mt-3 min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => startFromRecentSession(mostRecentSession)}
-                    className={secondaryCtaClass}
-                  >
-                    Start workout
-                  </button>
+              <Card className="!p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                      Last workout
+                    </p>
+                    <p className="mt-1 text-base font-semibold text-neutral-100">
+                      {mostRecentSession.title.trim() || "Workout"}
+                    </p>
+                    {quickStartLastText ? (
+                      <p className="mt-1 text-sm text-neutral-500">{quickStartLastText}</p>
+                    ) : null}
+                  </div>
+                  <Repeat2 className="h-5 w-5 shrink-0 text-purple-500" aria-hidden />
                 </div>
-              </div>
+                <div className="mt-4">
+                  <Link
+                    href="/history"
+                    className={
+                      secondaryCtaClass +
+                      " block !rounded-2xl !no-underline !text-neutral-200"
+                    }
+                  >
+                    History
+                  </Link>
+                </div>
+              </Card>
             </section>
           ) : null}
 
+          {/* 3) QUICK SPLITS (horizontal scroll) */}
           <section className="min-w-0">
-            <h2 className="text-sm font-medium text-neutral-400">Templates</h2>
-            <div className="mt-2 grid min-w-0 grid-cols-2 gap-3">
-              {QUICK_WORKOUT_TEMPLATES.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => startWorkoutFromTemplate(t)}
-                  className={TEMPLATE_CARD_CLASS}
-                >
-                  <p className={TEMPLATE_TITLE_CLASS}>{t.label}</p>
-                  <p className={TEMPLATE_SUBLINE_CLASS}>{t.muscleLine}</p>
-                  <p className={TEMPLATE_META_CLASS}>
-                    {t.exercises.length} exercise
-                    {t.exercises.length === 1 ? "" : "s"}
-                  </p>
-                </button>
-              ))}
+            <div className="flex items-baseline justify-between gap-3">
+              <h2 className="text-sm font-medium text-neutral-400">Quick splits</h2>
+              <span className="text-xs text-neutral-500">Swipe</span>
+            </div>
+            <div className="mt-2 -mx-4 flex gap-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+              {["Push", "Pull", "Legs", "Upper", "Full Body"].map((label) => {
+                const t = QUICK_WORKOUT_TEMPLATES.find((x) => x.label === label) ?? null;
+                if (!t) return null;
+                const difficultyLabel =
+                  t.difficulty === "beginner"
+                    ? locale === "ru"
+                      ? "Для новичков"
+                      : "Beginner"
+                    : t.difficulty === "intermediate"
+                      ? locale === "ru"
+                        ? "Средний уровень"
+                        : "Intermediate"
+                      : null;
+                const duration = typeof t.estimatedDurationMin === "number" ? t.estimatedDurationMin : null;
+                const Icon =
+                  label === "Push"
+                    ? Flame
+                    : label === "Pull"
+                      ? Dumbbell
+                      : label === "Legs"
+                        ? Layers
+                        : label === "Upper"
+                          ? Dumbbell
+                          : Layers;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => startWorkoutFromTemplate(t)}
+                    className="min-w-[172px] max-w-[172px] rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4 text-left shadow-sm transition active:scale-[0.99] active:opacity-90"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <Icon className="h-5 w-5 text-purple-500" aria-hidden />
+                      <ArrowRight className="h-4 w-4 text-neutral-600" aria-hidden />
+                    </div>
+                    <p className="mt-2 text-base font-semibold text-neutral-100">{t.label}</p>
+                    <p className="mt-1 line-clamp-2 text-xs leading-snug text-neutral-500">
+                      {t.muscleLine}
+                    </p>
+                    <div className="mt-2 space-y-0.5">
+                      <p className="text-xs tabular-nums text-neutral-600">
+                        {t.exercises.length} {locale === "ru" ? "упр." : "exercises"}
+                        {duration ? ` • ~${duration} min` : ""}
+                      </p>
+                      {difficultyLabel ? (
+                        <p className="text-xs text-neutral-600">{difficultyLabel}</p>
+                      ) : null}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3">
               <button
                 type="button"
-                onClick={createWorkoutDraft}
-                className={TEMPLATE_CARD_CLASS}
+                onClick={() => setTemplatesOpen(true)}
+                className={secondaryCtaClass + " !rounded-2xl"}
               >
-                <p className={TEMPLATE_TITLE_CLASS}>Custom</p>
-                <p className={TEMPLATE_SUBLINE_CLASS}>
-                  Add exercises and sets as you go
-                </p>
-                <p className={TEMPLATE_META_CLASS}>Empty session</p>
+                All templates
               </button>
             </div>
           </section>
+
+          {/* Templates modal (bottom sheet) */}
+          {templatesOpen ? (
+            <div className="fixed inset-0 z-50">
+              <button
+                type="button"
+                aria-label="Close templates"
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                onClick={() => setTemplatesOpen(false)}
+              />
+              <div className="absolute inset-x-0 bottom-0 mx-auto w-full max-w-[420px]">
+                <div className="rounded-t-3xl border border-neutral-800 bg-neutral-950 p-4 shadow-2xl">
+                  <div className="flex items-center justify-between gap-3 px-1">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-neutral-100">Templates</p>
+                      <p className="mt-0.5 text-xs text-neutral-500">Pick a split to start</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setTemplatesOpen(false)}
+                      className="min-h-10 rounded-xl border border-neutral-800 bg-neutral-900 px-3 text-sm font-medium text-neutral-200 active:opacity-90"
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.5rem)]">
+                    {QUICK_WORKOUT_TEMPLATES.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => {
+                          setTemplatesOpen(false);
+                          startWorkoutFromTemplate(t);
+                        }}
+                        className={TEMPLATE_CARD_CLASS + " !px-5 !py-4"}
+                      >
+                        <p className={TEMPLATE_TITLE_CLASS}>{t.label}</p>
+                        <p className={TEMPLATE_SUBLINE_CLASS}>{t.muscleLine}</p>
+                        <p className={TEMPLATE_META_CLASS}>
+                          {t.exercises.length} exercise{t.exercises.length === 1 ? "" : "s"}
+                        </p>
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTemplatesOpen(false);
+                        createWorkoutDraft();
+                      }}
+                      className={TEMPLATE_CARD_CLASS + " !px-5 !py-4"}
+                    >
+                      <p className={TEMPLATE_TITLE_CLASS}>Custom</p>
+                      <p className={TEMPLATE_SUBLINE_CLASS}>Add exercises and sets as you go</p>
+                      <p className={TEMPLATE_META_CLASS}>Empty session</p>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -864,6 +1121,13 @@ export function WorkoutView() {
           <h1 className="text-2xl font-semibold leading-tight text-neutral-50">
             Workout
           </h1>
+          <p className="mt-0.5 text-xl font-semibold leading-tight text-neutral-100">
+            {title.trim()
+              ? title.trim()
+              : locale === "ru"
+                ? "Без названия"
+                : "Untitled"}
+          </p>
           <p className="mt-1 text-sm text-neutral-400">
             <span className="font-medium tabular-nums text-neutral-200">
               {formatMMSS(elapsedSec)}
@@ -1013,10 +1277,6 @@ export function WorkoutView() {
           <div className="space-y-3">
             <h2 className="text-sm font-medium text-neutral-400">Exercises</h2>
             {workoutExercises.map((ex) => {
-              const exVolume = ex.sets.reduce(
-                (s, set) => s + (set.volume ?? 0),
-                0,
-              );
               const last = lastByExerciseId[ex.id];
               return (
                 <div key={ex.id} ref={setExerciseCardEl(ex.id)}>
@@ -1030,34 +1290,39 @@ export function WorkoutView() {
                         <div className="min-w-0 flex-1">
                           <p className="flex items-baseline justify-between gap-2 truncate text-lg font-semibold text-neutral-100">
                             <span className="truncate">{ex.name || "Exercise"}</span>
-                            <span
-                              className="shrink-0 text-primary/80"
-                              aria-hidden
-                            >
-                              ›
-                            </span>
                           </p>
                           <p className="mt-0.5 line-clamp-2 text-sm text-neutral-500">
-                            {ex.sets.length} set{ex.sets.length === 1 ? "" : "s"}{" "}
-                            · {Math.round(exVolume * 100) / 100} kg
+                            {locale === "ru"
+                              ? `${ex.sets.length} подхода`
+                              : `${ex.sets.length} set${ex.sets.length === 1 ? "" : "s"} planned`}
                             {last
-                              ? ` · ${last.date} · ${last.sets
-                                  .slice(0, 2)
-                                  .map((s) => `${s.weight}×${s.reps}`)
-                                  .join(" ")}${
-                                  last.sets.length > 2 ? "…" : ""
-                                }`
+                              ? (() => {
+                                  const lastVol =
+                                    Math.round(
+                                      last.sets.reduce(
+                                        (s, x) => s + (x.weight ?? 0) * (x.reps ?? 0),
+                                        0,
+                                      ) * 100,
+                                    ) / 100;
+                                  return locale === "ru"
+                                    ? ` • Прошлая тренировка: ${lastVol} кг`
+                                    : ` • Last session: ${lastVol} kg`;
+                                })()
                               : ""}
                           </p>
                         </div>
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center text-violet-400" aria-hidden>
+                          <ChevronRight className="h-[22px] w-[22px]" />
+                        </div>
                       </button>
-                      <div className="flex shrink-0 border-l border-neutral-800/80">
+                      <div className="flex shrink-0 items-center border-l border-neutral-800/80 px-1">
                         <button
                           type="button"
                           onClick={() => deleteExerciseCard(ex.id)}
-                          className="flex h-full min-h-11 min-w-[3.25rem] items-center justify-center px-1 text-sm text-neutral-500 transition active:text-neutral-400"
+                          aria-label={locale === "ru" ? "Удалить упражнение" : "Remove exercise"}
+                          className="flex h-10 w-10 items-center justify-center text-neutral-500 transition hover:text-red-300 active:text-red-200"
                         >
-                          Remove
+                          <Trash2 className="h-5 w-5" aria-hidden />
                         </button>
                       </div>
                     </div>
@@ -1304,23 +1569,46 @@ export function WorkoutView() {
 
           {!editingExercise ? (
             <>
-          <div className="space-y-2">
-            <h2 className="text-sm font-medium text-neutral-400">Session stats</h2>
-            <div className="rounded-xl border border-neutral-800/80 bg-neutral-950/30 px-3 py-2.5">
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="text-xs text-neutral-400">Sets</span>
-              <span className="text-base font-medium tabular-nums text-neutral-200">
-                {totals.totalSets}
-              </span>
+              {!startedAt ? (
+                <div className="space-y-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStartedAt(new Date().toISOString());
+                      setElapsedSec(0);
+                    }}
+                    className="flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl bg-purple-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-purple-500 active:opacity-90"
+                  >
+                    <Play className="h-5 w-5" aria-hidden />
+                    {locale === "ru" ? "Начать тренировку" : "Start workout"}
+                  </button>
+                  <p className="text-xs text-neutral-500">
+                    {locale === "ru"
+                      ? "Вы можете изменить упражнения перед началом тренировки."
+                      : "You can edit exercises before starting the timer."}
+                  </p>
+                </div>
+              ) : null}
+
+          {startedAt ? (
+            <div className="space-y-2">
+              <h2 className="text-sm font-medium text-neutral-400">Session stats</h2>
+              <div className="rounded-xl border border-neutral-800/80 bg-neutral-950/30 px-3 py-2.5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-xs text-neutral-400">Sets</span>
+                  <span className="text-base font-medium tabular-nums text-neutral-200">
+                    {totals.totalSets}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex items-baseline justify-between gap-2">
+                  <span className="text-xs text-neutral-400">Volume (kg)</span>
+                  <span className="text-base font-medium tabular-nums text-neutral-200">
+                    {Math.round(totals.totalVolume * 100) / 100}
+                  </span>
+                </div>
+              </div>
             </div>
-            <div className="mt-1.5 flex items-baseline justify-between gap-2">
-              <span className="text-xs text-neutral-400">Volume (kg)</span>
-              <span className="text-base font-medium tabular-nums text-neutral-200">
-                {Math.round(totals.totalVolume * 100) / 100}
-              </span>
-            </div>
-            </div>
-          </div>
+          ) : null}
 
           <div>
             <TextArea
@@ -1332,15 +1620,17 @@ export function WorkoutView() {
             />
           </div>
 
-          <div className="pt-0.5">
-            <Button
-              onClick={() => void saveWorkout()}
-              disabled={saving || workoutExercises.length === 0}
-              className="!rounded-xl !bg-purple-600 !py-3 !font-medium !text-white hover:!bg-purple-500"
-            >
-              {saving ? "Saving…" : "Finish workout"}
-            </Button>
-          </div>
+          {startedAt ? (
+            <div className="pt-0.5">
+              <Button
+                onClick={() => void saveWorkout()}
+                disabled={saving || workoutExercises.length === 0}
+                className="!rounded-xl !bg-purple-600 !py-3 !font-medium !text-white hover:!bg-purple-500"
+              >
+                {saving ? "Saving…" : "Finish workout"}
+              </Button>
+            </div>
+          ) : null}
             </>
           ) : null}
         </section>

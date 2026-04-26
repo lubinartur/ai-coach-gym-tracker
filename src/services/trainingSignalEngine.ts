@@ -1,8 +1,14 @@
+/**
+ * Coaching-context signal engine: `buildTrainingSignals` produces `CoachingContextSignals`
+ * (trends, recovery matrix, alerts). For session-level summary (`SessionSummarySignals`), see
+ * `computeTrainingSignals` in `trainingSignals.ts`.
+ */
+import { cap } from "@/lib/string/cap";
 import { buildCatalogLookup, resolvePrimaryMuscle } from "@/lib/muscleVolumeAnalysis";
 import type {
+  CoachingContextSignals,
   ExerciseProgressionForAi,
   ExerciseProgressionTrend,
-  TrainingSignalEngineOutput,
   TrainingSignalExerciseTrend,
   TrainingSignalFatigueTrend,
   TrainingSignalMuscleRecovery,
@@ -25,12 +31,6 @@ const MAJOR_MUSCLES: PrimaryMuscleGroup[] = [
 function formatBestSet(w: number, r: number): string {
   const ww = Math.round(w * 100) / 100;
   return `${ww}×${Math.round(r)}`;
-}
-
-function cap(s: string, n: number): string {
-  const t = s.trim();
-  if (t.length <= n) return t;
-  return `${t.slice(0, n - 1).trimEnd()}…`;
 }
 
 function aggregateFatigueTrend(input: {
@@ -67,7 +67,7 @@ function aggregateFatigueTrend(input: {
 function progressionFocusFrom(
   fatigue: TrainingSignalFatigueTrend["level"],
   periodPhase: "moderate" | "progression" | "peak" | "deload",
-): TrainingSignalEngineOutput["progressionFocus"] {
+): CoachingContextSignals["progressionFocus"] {
   if (periodPhase === "deload") return "deload";
   if (fatigue === "high") return "reduce";
   if (fatigue === "moderate") return "maintain";
@@ -182,7 +182,7 @@ export function buildTrainingSignals(input: {
   muscleHypertrophyRanges: Partial<Record<PrimaryMuscleGroup, { min: number; max: number }>>;
   periodizationPhase: "moderate" | "progression" | "peak" | "deload";
   laggingBlockersHighFatigue?: boolean;
-}): TrainingSignalEngineOutput {
+}): CoachingContextSignals {
   const todayYmd = getCalendarDateInTimezone(new Date(), input.timeZone);
   const exerciseTrends = buildExerciseTrends(input.exerciseProgression);
 

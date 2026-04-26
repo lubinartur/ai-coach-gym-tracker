@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  enrichSuggestNextWorkoutInsights,
   fetchSuggestNextWorkoutFromOpenAI,
   getFallbackNextWorkoutSuggestion,
 } from "@/server/aiCoachSuggestNext";
@@ -19,7 +20,13 @@ export async function POST(req: Request) {
 
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
-    return NextResponse.json(getFallbackNextWorkoutSuggestion());
+    const base = getFallbackNextWorkoutSuggestion();
+    const withInsights = await enrichSuggestNextWorkoutInsights(
+      base,
+      body as AiCoachRequestPayload,
+      null,
+    );
+    return NextResponse.json(withInsights);
   }
 
   const result = await fetchSuggestNextWorkoutFromOpenAI(

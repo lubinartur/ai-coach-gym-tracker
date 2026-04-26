@@ -51,10 +51,10 @@ const limOpts = [
 ] as const;
 
 const pickClass = (on: boolean) =>
-  "min-h-[48px] w-full rounded-xl border px-3 text-left text-sm font-medium transition " +
+  "min-h-[48px] w-full rounded-2xl border px-3 text-left text-sm font-medium transition " +
   (on
-    ? "border-purple-500 bg-purple-500/15 text-neutral-100"
-    : "border-neutral-800 bg-neutral-900 text-neutral-300 active:opacity-90");
+    ? "border-violet-500/50 bg-violet-500/15 text-neutral-100 shadow-sm"
+    : "border-neutral-800/90 bg-neutral-950/60 text-neutral-300 active:opacity-90");
 
 export function OnboardingView() {
   const router = useRouter();
@@ -166,23 +166,25 @@ export function OnboardingView() {
 
   if (loadErr) {
     return (
-      <main className="flex min-h-dvh flex-col">
-        <p className="text-sm text-red-400">{loadErr}</p>
+      <main className="mx-auto flex min-h-dvh w-full min-w-0 max-w-full flex-col justify-center py-4">
+        <p className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-200">
+          {loadErr}
+        </p>
       </main>
     );
   }
 
   return (
-    <main className="flex min-h-dvh flex-col gap-4 pb-4">
+    <main className="mx-auto flex w-full min-w-0 max-w-full min-h-dvh flex-col space-y-6 pb-2">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
           Step {step}/{TOTAL_STEPS}
         </p>
         <button
           type="button"
           onClick={() => void skip()}
           disabled={saving}
-          className="text-sm text-neutral-500 underline-offset-2 hover:text-neutral-300"
+          className="shrink-0 text-sm text-neutral-500 underline-offset-2 transition hover:text-neutral-300"
         >
           Skip for now
         </button>
@@ -190,7 +192,7 @@ export function OnboardingView() {
 
       {step === 1 && (
         <section className="space-y-3">
-          <h1 className="text-xl font-semibold text-neutral-100">Sex</h1>
+          <h1 className="text-[28px] font-bold leading-tight text-neutral-50">Sex</h1>
           {(["male", "female", "other"] as const).map((s) => (
             <button
               key={s}
@@ -206,7 +208,7 @@ export function OnboardingView() {
 
       {step === 2 && (
         <section className="space-y-4">
-          <h1 className="text-xl font-semibold text-neutral-100">Body</h1>
+          <h1 className="text-[28px] font-bold leading-tight text-neutral-50">Body</h1>
           <TextField
             label="Age"
             inputMode="numeric"
@@ -233,7 +235,7 @@ export function OnboardingView() {
 
       {step === 3 && (
         <section className="space-y-3">
-          <h1 className="text-xl font-semibold text-neutral-100">Goal</h1>
+          <h1 className="text-[28px] font-bold leading-tight text-neutral-50">Goal</h1>
           {goals.map((g) => (
             <button
               key={g.value}
@@ -249,7 +251,7 @@ export function OnboardingView() {
 
       {step === 4 && (
         <section className="space-y-3">
-          <h1 className="text-xl font-semibold text-neutral-100">Experience</h1>
+          <h1 className="text-[28px] font-bold leading-tight text-neutral-50">Experience</h1>
           {experienceOpts.map((e) => (
             <button
               key={e.value}
@@ -265,7 +267,9 @@ export function OnboardingView() {
 
       {step === 5 && (
         <section className="space-y-3">
-          <h1 className="text-xl font-semibold text-neutral-100">Training frequency</h1>
+          <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
+            Training frequency
+          </h1>
           {freqOpts.map((f) => (
             <button
               key={f.value}
@@ -281,7 +285,7 @@ export function OnboardingView() {
 
       {step === 6 && (
         <section className="space-y-3">
-          <h1 className="text-xl font-semibold text-neutral-100">Equipment</h1>
+          <h1 className="text-[28px] font-bold leading-tight text-neutral-50">Equipment</h1>
           {equipmentOpts.map((e) => (
             <button
               key={e.value}
@@ -297,7 +301,7 @@ export function OnboardingView() {
 
       {step === 7 && (
         <section className="space-y-3">
-          <h1 className="text-xl font-semibold text-neutral-100">Limitations</h1>
+          <h1 className="text-[28px] font-bold leading-tight text-neutral-50">Limitations</h1>
           <p className="text-sm text-neutral-500">Select all that apply.</p>
           {limOpts.map((l) => (
             <button
@@ -314,7 +318,7 @@ export function OnboardingView() {
 
       {step === 8 && (
         <section className="space-y-3">
-          <h1 className="text-xl font-semibold text-neutral-100">Notes</h1>
+          <h1 className="text-[28px] font-bold leading-tight text-neutral-50">Notes</h1>
           <p className="text-sm text-neutral-500">Anything AI should know?</p>
           <TextArea
             label="Notes (optional)"
@@ -349,7 +353,7 @@ export function OnboardingView() {
           <button
             type="button"
             onClick={() => setStep((s) => s - 1)}
-            className="min-h-11 text-sm text-neutral-500"
+            className="min-h-11 text-sm text-neutral-500 transition hover:text-neutral-300"
           >
             Back
           </button>

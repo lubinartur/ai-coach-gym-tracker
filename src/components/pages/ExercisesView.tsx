@@ -102,17 +102,15 @@ export function ExercisesView() {
   }
 
   return (
-    <main className="flex flex-col gap-6">
+    <main className="mx-auto flex w-full min-w-0 max-w-full flex-col space-y-6 pb-32">
       <header className="space-y-1">
         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
           Life Execution Panel
         </p>
-        <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-50">
+        <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
           Exercises
         </h1>
-        <p className="text-sm text-neutral-600 dark:text-neutral-400">
-          Saved exercise library
-        </p>
+        <p className="text-sm text-neutral-500">Saved exercise library</p>
       </header>
 
       <section className="flex flex-col gap-3">
@@ -122,7 +120,7 @@ export function ExercisesView() {
       </section>
 
       {open ? (
-        <Card className="space-y-4">
+        <Card className="!p-5 space-y-4">
           <TextField
             label="Name"
             placeholder="e.g. Cable Lateral Raise"
@@ -149,7 +147,7 @@ export function ExercisesView() {
         </Card>
       ) : null}
 
-      <Card className="space-y-4">
+      <Card className="!p-5 space-y-4">
         <TextField
           label="Search"
           placeholder="Search exercises…"
@@ -182,15 +180,13 @@ export function ExercisesView() {
 
       <section className="flex flex-col gap-3">
         {loading ? (
-          <p className="text-sm text-neutral-600 dark:text-neutral-400">
-            Loading exercises…
-          </p>
+          <p className="text-sm text-neutral-500">Loading exercises…</p>
         ) : items.length === 0 ? (
-          <Card className="space-y-1">
-            <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-50">
+          <Card className="!p-5 space-y-1">
+            <p className="text-sm font-semibold text-neutral-50">
               No exercises yet
             </p>
-            <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            <p className="text-sm text-neutral-500">
               Add an exercise to build your library.
             </p>
           </Card>
@@ -199,16 +195,16 @@ export function ExercisesView() {
             {filtered.map((e) => (
               <Card
                 key={e.id}
-                className="flex items-center gap-2 !p-3"
+                className="flex items-center gap-2 !p-4"
               >
                 <Link
                   href={`/exercises/${e.id}`}
                   className="min-w-0 flex-1 space-y-1"
                 >
-                  <p className="text-base font-semibold text-neutral-900 dark:text-neutral-50">
+                  <p className="text-base font-semibold text-neutral-50">
                     {e.name}
                   </p>
-                  <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                  <p className="text-sm text-neutral-500">
                     {(e.muscleGroup ?? "—") + " · " + (e.equipment ?? "—")}
                   </p>
                 </Link>
@@ -227,11 +223,11 @@ export function ExercisesView() {
               </Card>
             ))}
             {filtered.length === 0 ? (
-              <Card className="space-y-1">
-                <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-50">
+              <Card className="!p-5 space-y-1">
+                <p className="text-sm font-semibold text-neutral-50">
                   No matches
                 </p>
-                <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                <p className="text-sm text-neutral-500">
                   Try a different search or clear filters.
                 </p>
               </Card>

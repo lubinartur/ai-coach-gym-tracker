@@ -1,19 +1,16 @@
+import { cap } from "@/lib/string/cap";
 import type {
+  AiDecisionContext,
+  CoachingContextSignals,
   ProgressionPlan,
   ProgressionPlanExercise,
-  TrainingSignalEngineOutput,
 } from "@/types/aiCoach";
-
-function cap(s: string, n: number): string {
-  const t = s.trim();
-  if (t.length <= n) return t;
-  return `${t.slice(0, n - 1).trimEnd()}…`;
-}
+import { evaluateRecoveryState } from "@/services/recoveryEngine";
 
 function actionForTrend(input: {
-  trend: TrainingSignalEngineOutput["exerciseTrends"][number]["trend"];
-  fatigueLevel: TrainingSignalEngineOutput["fatigueTrend"]["level"];
-  focus: TrainingSignalEngineOutput["progressionFocus"];
+  trend: CoachingContextSignals["exerciseTrends"][number]["trend"];
+  fatigueLevel: CoachingContextSignals["fatigueTrend"]["level"];
+  focus: CoachingContextSignals["progressionFocus"];
   note: string;
 }): { action: ProgressionPlanExercise["action"]; reason: string } {
   const { trend, fatigueLevel, focus, note } = input;
@@ -43,10 +40,10 @@ function actionForTrend(input: {
 }
 
 export function buildProgressionPlan(
-  trainingSignals: TrainingSignalEngineOutput,
+  coachingContextSignals: CoachingContextSignals,
 ): ProgressionPlan {
-  const fatigue = trainingSignals.fatigueTrend.level;
-  const focus = trainingSignals.progressionFocus;
+  const fatigue = coachingContextSignals.fatigueTrend.level;
+  const focus = coachingContextSignals.progressionFocus;
 
   let globalStrategy: ProgressionPlan["globalStrategy"] = "maintain";
   if (focus === "deload") globalStrategy = "deload";
@@ -55,7 +52,7 @@ export function buildProgressionPlan(
   else if (fatigue === "low") globalStrategy = "progress";
   else globalStrategy = "maintain";
 
-  const exercisePlans: ProgressionPlanExercise[] = trainingSignals.exerciseTrends
+  const exercisePlans: ProgressionPlanExercise[] = coachingContextSignals.exerciseTrends
     .slice(0, 12)
     .map((t) => {
       const { action, reason } = actionForTrend({
@@ -73,10 +70,57 @@ export function buildProgressionPlan(
     });
 
   // If many muscles are fatigued, bias toward reduce.
-  const fatiguedMuscles = trainingSignals.muscleRecovery.filter((m) => m.status === "fatigued").length;
+  const fatiguedMuscles = coachingContextSignals.muscleRecovery.filter((m) => m.status === "fatigued").length;
   if (globalStrategy === "progress" && fatiguedMuscles >= 3) globalStrategy = "maintain";
   if (globalStrategy !== "deload" && fatigue === "high") globalStrategy = "deload";
 
   return { globalStrategy, exercisePlans };
+}
+
+/**
+ * Recovery-aware progression planner.
+ *
+ * Keeps the legacy `buildProgressionPlan(coachingContextSignals)` API intact, but provides
+ * a context-driven entrypoint for the CoAIch pipeline so progression can respond to
+ * centralized `RecoveryState` (global fatigue + deload recommendation).
+ */
+export function buildProgressionPlanFromDecisionContext(
+  context: AiDecisionContext,
+): ProgressionPlan {
+  const recovery = evaluateRecoveryState(context);
+  const base = buildProgressionPlan(context.trainingSignals);
+
+  // Global fatigue high: bias away from aggressive progression.
+  if (recovery.globalFatigueLevel === "high") {
+    const exercisePlans = base.exercisePlans.map((p) => {
+      if (p.action === "increase_reps" || p.action === "increase_weight" || p.action === "increase_sets") {
+        return {
+          ...p,
+          action: "maintain" as const,
+          reason: cap("High fatigue: consolidate and avoid adding stress this session.", 120),
+        };
+      }
+      return p;
+    });
+    return { globalStrategy: "maintain", exercisePlans };
+  }
+
+  // Deload recommended: reduce volume via reduce_sets.
+  if (recovery.deloadRecommended) {
+    const exercisePlans = base.exercisePlans.map((p) => ({
+      ...p,
+      action:
+        p.action === "reduce_weight"
+          ? ("reduce_weight" as const)
+          : ("reduce_sets" as const),
+      reason: cap(
+        `Deload/recovery: reduce working sets (~${Math.round((1 - recovery.rules.deloadVolumeMultiplier) * 100)}%).`,
+        120,
+      ),
+    }));
+    return { globalStrategy: "deload", exercisePlans };
+  }
+
+  return base;
 }
 
