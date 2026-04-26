@@ -568,4 +568,14 @@ export type AiCoachRequestPayload = {
   /** Unified analysis pipeline summary (primary source of truth for the model). */
   aiDecisionContext: AiDecisionContext;
   quickTemplates: { id: string; label: string; muscleLine: string; exercises: string[] }[];
+
+  /**
+   * Optional UI-driven override: user requested a custom workout target.
+   * Server may use this to bias exercise selection and title, while still respecting recovery/volume guards.
+   */
+  customWorkoutRequest?: {
+    targetMuscles: string[];
+    durationMin: number;
+    focus: "hypertrophy" | "strength" | "pump" | "light";
+  };
 };

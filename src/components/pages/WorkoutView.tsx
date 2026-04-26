@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, ChevronRight, Dumbbell, Flame, Layers, Play, Repeat2, Trash2 } from "lucide-react";
+import { ArrowRight, ChevronRight, Dumbbell, Flame, Layers, Play, Repeat2, Trash2, Wand2 } from "lucide-react";
 import { ExerciseSetRow } from "@/components/workout/ExerciseSetRow";
 import { WorkoutReviewContent } from "@/components/workout/WorkoutReviewContent";
 import { Button } from "@/components/ui/Button";
@@ -104,6 +104,11 @@ export function WorkoutView() {
     useState<AiDecisionContext | null>(null);
   const [aiMode, setAiMode] = useState<AiCoachMode>("history_based");
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [customBuilderOpen, setCustomBuilderOpen] = useState(false);
+  const [customMuscles, setCustomMuscles] = useState<string[]>([]);
+  const [customDuration, setCustomDuration] = useState<number | null>(null);
+  const [customFocus, setCustomFocus] = useState<string | null>(null);
+  const [customGenerating, setCustomGenerating] = useState(false);
 
   function setAiModeAndResetResult(next: AiCoachMode) {
     setAiMode(next);
@@ -269,6 +274,32 @@ export function WorkoutView() {
         ? formatWorkoutLastPerformed(mostRecentSession.date)
         : "",
     [mostRecentSession],
+  );
+
+  const customMuscleOptions = useMemo(
+    () =>
+      [
+        { id: "chest", en: "Chest", ru: "Грудь" },
+        { id: "back", en: "Back", ru: "Спина" },
+        { id: "shoulders", en: "Shoulders", ru: "Плечи" },
+        { id: "biceps", en: "Biceps", ru: "Бицепс" },
+        { id: "triceps", en: "Triceps", ru: "Трицепс" },
+        { id: "legs", en: "Legs", ru: "Ноги" },
+        { id: "core", en: "Core", ru: "Кор" },
+      ] as const,
+    [],
+  );
+
+  const customDurationOptions = [30, 45, 60, 75] as const;
+  const customFocusOptions = useMemo(
+    () =>
+      [
+        { id: "hypertrophy", en: "Hypertrophy", ru: "Гипертрофия" },
+        { id: "strength", en: "Strength", ru: "Сила" },
+        { id: "pump", en: "Pump", ru: "Памп" },
+        { id: "light", en: "Light", ru: "Легко" },
+      ] as const,
+    [],
   );
 
   useLayoutEffect(() => {
@@ -533,6 +564,52 @@ export function WorkoutView() {
     }
   }
 
+  async function generateCustomWorkout() {
+    if (!customMuscles.length) return;
+    if (!customDuration) return;
+    if (!customFocus) return;
+    setCustomGenerating(true);
+    try {
+      const base = await buildAiCoachRequestPayload({ aiMode });
+      const payload = {
+        ...base,
+        customWorkoutRequest: {
+          targetMuscles: [...customMuscles],
+          durationMin: customDuration,
+          focus: customFocus,
+        },
+      } as typeof base & {
+        customWorkoutRequest: {
+          targetMuscles: string[];
+          durationMin: number;
+          focus: "hypertrophy" | "strength" | "pump" | "light";
+        };
+      };
+      const res = await fetch("/api/ai-coach/suggest-next-workout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(t("error_suggestion"));
+      }
+      const parsed: unknown = JSON.parse(text);
+      const normalized = normalizeSuggestNextResponseClient(parsed, base.trainingSignals);
+      const draft: AiWorkoutDraftPayload = {
+        title: "Custom Workout",
+        exercises: normalized.exercises.map((e) => ({
+          name: e.name,
+          sets: e.sets.map((s) => ({ weight: s.weight, reps: s.reps })),
+        })),
+      };
+      applyAiDraftPayload(draft);
+      setCustomBuilderOpen(false);
+    } finally {
+      setCustomGenerating(false);
+    }
+  }
+
   function startSuggestedWorkout() {
     if (!aiResult || aiResult.exercises.length === 0) return;
     setAiDecisionContext(null);
@@ -563,7 +640,8 @@ export function WorkoutView() {
     setPickerCategory(null);
     setCustomExerciseName("");
     setLastByExerciseId({});
-    setStartedAt(new Date().toISOString());
+    // Templates should prepare the workout, not start the timer.
+    setStartedAt(null);
     setElapsedSec(0);
     setEditingExerciseId(null);
     for (const ex of wex) {
@@ -990,9 +1068,33 @@ export function WorkoutView() {
               <span className="text-xs text-neutral-500">Swipe</span>
             </div>
             <div className="mt-2 -mx-4 flex gap-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-              {["Push", "Pull", "Legs", "Upper", "Full Body"].map((label) => {
-                const t = QUICK_WORKOUT_TEMPLATES.find((x) => x.label === label) ?? null;
-                if (!t) return null;
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomBuilderOpen(true);
+                }}
+                className="min-w-[172px] max-w-[172px] rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4 text-left shadow-sm transition active:scale-[0.99] active:opacity-90"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <Wand2 className="h-5 w-5 text-purple-500" aria-hidden />
+                  <ArrowRight className="h-4 w-4 text-neutral-600" aria-hidden />
+                </div>
+                <p className="mt-2 text-base font-semibold text-neutral-100">
+                  {locale === "ru" ? "Своя тренировка" : "Custom workout"}
+                </p>
+                <p className="mt-1 line-clamp-2 text-xs leading-snug text-neutral-500">
+                  {locale === "ru"
+                    ? "Выбери мышцы, длительность и фокус"
+                    : "Choose muscles, duration, and focus"}
+                </p>
+                <div className="mt-2 space-y-0.5">
+                  <p className="text-xs tabular-nums text-neutral-600">
+                    {locale === "ru" ? "Скоро" : "Coming soon"}
+                  </p>
+                </div>
+              </button>
+
+              {QUICK_WORKOUT_TEMPLATES.map((t) => {
                 const difficultyLabel =
                   t.difficulty === "beginner"
                     ? locale === "ru"
@@ -1005,13 +1107,13 @@ export function WorkoutView() {
                       : null;
                 const duration = typeof t.estimatedDurationMin === "number" ? t.estimatedDurationMin : null;
                 const Icon =
-                  label === "Push"
+                  t.label === "Push"
                     ? Flame
-                    : label === "Pull"
+                    : t.label === "Pull"
                       ? Dumbbell
-                      : label === "Legs"
+                      : t.label === "Legs"
                         ? Layers
-                        : label === "Upper"
+                        : t.label === "Upper"
                           ? Dumbbell
                           : Layers;
                 return (
@@ -1052,6 +1154,162 @@ export function WorkoutView() {
               </button>
             </div>
           </section>
+
+          {/* Custom workout builder (UI-only placeholder; AI hookup later) */}
+          {customBuilderOpen ? (
+            <div className="fixed inset-0 z-50">
+              <button
+                type="button"
+                aria-label="Close custom builder"
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                onClick={() => setCustomBuilderOpen(false)}
+              />
+              <div className="absolute inset-x-0 bottom-0 mx-auto w-full max-w-[420px]">
+                <div className="max-h-[85vh] overflow-y-auto rounded-t-3xl border border-neutral-800 bg-neutral-950 p-4 shadow-2xl pb-[calc(env(safe-area-inset-bottom,0px)+96px)]">
+                  <div className="flex items-center justify-between gap-3 px-1">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-neutral-100">
+                        {locale === "ru" ? "Своя тренировка" : "Custom workout"}
+                      </p>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        {locale === "ru"
+                          ? "Выбери мышцы, длительность и фокус"
+                          : "Choose muscles, duration, and focus"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCustomBuilderOpen(false)}
+                      className="min-h-10 rounded-xl border border-neutral-800 bg-neutral-900 px-3 text-sm font-medium text-neutral-200 active:opacity-90"
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  <div className="mt-4 space-y-4">
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                        {locale === "ru" ? "Мышцы" : "Muscles"}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {customMuscleOptions.map((m) => {
+                          const on = customMuscles.includes(m.id);
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => {
+                                setCustomMuscles((prev) =>
+                                  prev.includes(m.id)
+                                    ? prev.filter((x) => x !== m.id)
+                                    : [...prev, m.id],
+                                );
+                              }}
+                              className={
+                                "min-h-10 rounded-full border px-3 text-sm font-medium transition " +
+                                (on
+                                  ? "border-violet-500/50 bg-violet-500/15 text-neutral-100"
+                                  : "border-neutral-800 bg-neutral-900 text-neutral-300 active:opacity-90")
+                              }
+                            >
+                              {locale === "ru" ? m.ru : m.en}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                        {locale === "ru" ? "Длительность" : "Duration"}
+                      </p>
+                      <div className="grid grid-cols-4 gap-2">
+                        {customDurationOptions.map((d) => {
+                          const on = customDuration === d;
+                          return (
+                            <button
+                              key={d}
+                              type="button"
+                              onClick={() => setCustomDuration(d)}
+                              className={
+                                "min-h-10 rounded-2xl border text-sm font-semibold transition " +
+                                (on
+                                  ? "border-violet-500/50 bg-violet-500/15 text-neutral-100"
+                                  : "border-neutral-800 bg-neutral-900 text-neutral-300 active:opacity-90")
+                              }
+                            >
+                              {d}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                        {locale === "ru" ? "Фокус" : "Focus"}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {customFocusOptions.map((f) => {
+                          const on = customFocus === f.id;
+                          return (
+                            <button
+                              key={f.id}
+                              type="button"
+                              onClick={() => setCustomFocus(f.id)}
+                              className={
+                                "min-h-10 rounded-2xl border text-sm font-semibold transition " +
+                                (on
+                                  ? "border-violet-500/50 bg-violet-500/15 text-neutral-100"
+                                  : "border-neutral-800 bg-neutral-900 text-neutral-300 active:opacity-90")
+                              }
+                            >
+                              {locale === "ru" ? f.ru : f.en}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => void generateCustomWorkout()}
+                        disabled={
+                          customGenerating ||
+                          customMuscles.length === 0 ||
+                          customDuration === null ||
+                          customFocus === null
+                        }
+                        className={
+                          "flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-base font-semibold transition active:opacity-90 " +
+                          (customGenerating ||
+                          customMuscles.length === 0 ||
+                          customDuration === null ||
+                          customFocus === null
+                            ? "bg-neutral-800 text-neutral-400"
+                            : "bg-purple-600 text-white hover:bg-purple-500")
+                        }
+                      >
+                        {customGenerating
+                          ? locale === "ru"
+                            ? "Генерируем…"
+                            : "Generating…"
+                          : locale === "ru"
+                            ? "Сгенерировать тренировку"
+                            : "Generate workout"}
+                      </button>
+                      <p className="text-xs text-neutral-500">
+                        {locale === "ru"
+                          ? "Генерация создаст тренировку и откроет её в режиме подготовки. Таймер стартует только после кнопки «Начать»."
+                          : "Generation will open a prepared workout. The timer starts only when you press Start."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {/* Templates modal (bottom sheet) */}
           {templatesOpen ? (

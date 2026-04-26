@@ -42,6 +42,7 @@ import {
   withSuggestNextDevDebug,
 } from "@/server/aiCoach/suggestNext/debugAndConfidence";
 import { selectWorkoutStructure } from "@/services/exerciseSelectionEngine";
+import type { SelectedWorkoutStructure } from "@/services/exerciseSelectionEngine";
 import { parseLoadReps } from "@/lib/loadRepsParser";
 import { buildEngineRuntimeContextWithMemory } from "@/services/buildEngineRuntimeContext";
 import type { EngineRuntimeContext } from "@/types/engineRuntimeContext";
@@ -72,6 +73,96 @@ const DEFAULT_DECISION_LABEL: Record<ExerciseDecision, string> = {
 
 const MAX_LINE = 120;
 const MAX_EXERCISE_REASON = 150;
+
+function normMuscleId(s: string): string {
+  return String(s ?? "").trim().toLowerCase();
+}
+
+function templateMusclesFromMuscleLine(muscleLine: string): Set<string> {
+  return new Set(
+    String(muscleLine ?? "")
+      .split("•")
+      .map((x) => normMuscleId(x))
+      .map((x) =>
+        x.includes("chest")
+          ? "chest"
+          : x.includes("back")
+            ? "back"
+            : x.includes("shoulder")
+              ? "shoulders"
+              : x.includes("bicep")
+                ? "biceps"
+                : x.includes("tricep")
+                  ? "triceps"
+                  : x.includes("leg") || x.includes("quad") || x.includes("glute")
+                    ? "legs"
+                    : x.includes("core") || x.includes("abs")
+                      ? "core"
+                      : x,
+      )
+      .filter(Boolean),
+  );
+}
+
+function scoreTemplateMatch(input: { target: Set<string>; tpl: { muscleLine: string } }): number {
+  const mus = templateMusclesFromMuscleLine(input.tpl.muscleLine);
+  if (mus.size === 0 || input.target.size === 0) return 0;
+  let inter = 0;
+  for (const t of input.target) if (mus.has(t)) inter += 1;
+  const union = new Set([...input.target, ...mus]).size;
+  return union ? inter / union : 0;
+}
+
+function desiredExerciseCount(durationMin: number): number {
+  if (!Number.isFinite(durationMin) || durationMin <= 0) return 6;
+  if (durationMin <= 30) return 4;
+  if (durationMin <= 45) return 5;
+  if (durationMin <= 60) return 6;
+  return 7;
+}
+
+function buildCustomSelectedStructure(payload: AiCoachRequestPayload): {
+  structure: SelectedWorkoutStructure;
+  warning: string;
+} | null {
+  const req = payload.customWorkoutRequest;
+  if (!req) return null;
+  const target = new Set(req.targetMuscles.map(normMuscleId).filter(Boolean));
+  if (!target.size) return null;
+
+  // Deterministically choose the best-matching quick template so the target muscles stay on-target.
+  const best = (payload.quickTemplates ?? [])
+    .map((t) => ({ t, score: scoreTemplateMatch({ target, tpl: t }) }))
+    .sort((a, b) => b.score - a.score)[0];
+  const chosen = best?.t ?? payload.quickTemplates?.[0];
+  if (!chosen) return null;
+
+  const wantN = desiredExerciseCount(req.durationMin);
+  const names = chosen.exercises.slice(
+    0,
+    Math.max(3, Math.min(wantN, chosen.exercises.length)),
+  );
+
+  // Minimal safe structure: keep the output shape stable. The LLM will program sets/reps/loads.
+  const structure: SelectedWorkoutStructure = {
+    split: "Full",
+    exercises: names.map((exercise, idx) => ({
+      tier: (idx < 2 ? 1 : idx < 4 ? 2 : 3) as 1 | 2 | 3,
+      role: "core",
+      exercise,
+      primaryMuscle: "other",
+      movementPattern: "isolation",
+      selectionScore: 1,
+      reasonCodes: ["custom_target"],
+    })),
+    excluded: [],
+  };
+
+  return {
+    structure,
+    warning: `Custom workout target applied: ${[...target].join(", ")}`,
+  };
+}
 
 function isFatigue(s: string): s is FatigueSignal {
   return (FATIGUE_SET as string[]).includes(s);
@@ -1126,11 +1217,14 @@ export async function fetchSuggestNextWorkoutFromOpenAI(
     }
     return out;
   })();
-  const structure = selectWorkoutStructure({
-    runtime,
-    catalog,
-    constraints: {},
-  });
+  const custom = buildCustomSelectedStructure(payload);
+  const structure = custom
+    ? custom.structure
+    : selectWorkoutStructure({
+        runtime,
+        catalog,
+        constraints: {},
+      });
   const promptPayload = { ...payload, selectedStructure: structure };
   const modeBlock =
     payload.aiMode === "coach_recommended"
@@ -1151,6 +1245,9 @@ ${JSON.stringify({
   if (!content1) return null;
   const result1 = parseAndFinalize(content1, payload, structure, runtime, loadManagement);
   if (!result1) return null;
+  if (custom) {
+    result1.warnings = [...(result1.warnings ?? []), custom.warning];
+  }
 
   if (!responseViolatesSplitGuard(result1, payload)) {
     if (process.env.NODE_ENV === "development") {

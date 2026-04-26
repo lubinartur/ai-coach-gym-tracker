@@ -35,9 +35,9 @@ export function FloatingTabBar() {
   return (
     <nav
       aria-label="Primary"
-      className="fixed right-5 bottom-6 left-5 z-50 flex max-w-full flex-col overflow-hidden rounded-full border border-neutral-800 bg-neutral-900/90 shadow-xl backdrop-blur-md [padding-bottom:env(safe-area-inset-bottom,0px)]"
+      className="fixed bottom-0 left-1/2 z-50 w-[calc(100%-32px)] max-w-[430px] -translate-x-1/2 pb-[calc(env(safe-area-inset-bottom,0px)+8px)]"
     >
-      <div className="flex h-16 w-full min-h-[64px] items-center justify-between px-6">
+      <div className="flex h-20 w-full items-center justify-around overflow-hidden rounded-[32px] border border-neutral-800 bg-neutral-900/90 px-6 shadow-xl backdrop-blur-md">
         {tabs.map(({ href, key, label, Icon, match }) => {
           const active = match(pathname);
           return (
