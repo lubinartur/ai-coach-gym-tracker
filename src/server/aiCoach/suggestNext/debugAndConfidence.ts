@@ -1,4 +1,5 @@
 import { normalizeExerciseName } from "@/lib/exerciseName";
+import { estimateBaselineWeightForExerciseFromCalibration } from "@/lib/strengthCalibration";
 import type {
   AiCoachRequestPayload,
   SuggestNextWorkoutAiDebug,
@@ -82,8 +83,80 @@ export function withSuggestNextDevDebug(
   insightMeta?: { source: "llm" | "fallback"; warnings: string[] },
 ): SuggestNextWorkoutResponse {
   const base = buildSuggestNextAiDebug(input);
+
+  const athleteProfileLoose =
+    (input.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ??
+    (input.athleteProfile as Record<string, unknown> | undefined) ??
+    {};
+  const scRaw = athleteProfileLoose.strengthCalibration;
+  const sc =
+    scRaw && typeof scRaw === "object"
+      ? (scRaw as {
+          benchPress?: { weight: number; reps: number };
+          squatOrLegPress?: { weight: number; reps: number };
+          deadliftOrRdl?: { weight: number; reps: number };
+          latPulldownOrPullup?: { weight: number; reps: number };
+          shoulderPress?: { weight: number; reps: number };
+        })
+      : undefined;
+  const expRaw = athleteProfileLoose.experience;
+  const exp =
+    expRaw === "beginner" || expRaw === "intermediate" || expRaw === "advanced"
+      ? expRaw
+      : undefined;
+  const limitationsRaw = athleteProfileLoose.limitations;
+  const limitations = Array.isArray(limitationsRaw)
+    ? limitationsRaw.filter((x) => typeof x === "string")
+    : undefined;
+  const calibratedExercises = (r.exercises ?? [])
+    .map((ex) => {
+      const est = estimateBaselineWeightForExerciseFromCalibration({
+        exerciseName: ex.name,
+        calibration: sc,
+        experience: exp,
+        limitations,
+      });
+      if (!est) return null;
+      const w0 = ex.sets?.[0]?.weight;
+      const match =
+        typeof w0 === "number" && Number.isFinite(w0) && Math.abs(w0 - est.weight) <= 1.25;
+      if (!match) return null;
+      return {
+        exercise: ex.name,
+        sourceLift: est.sourceLift,
+        estimatedWeight: est.weight,
+      };
+    })
+    .filter(Boolean) as NonNullable<SuggestNextWorkoutAiDebug["calibratedExercises"]>;
+
+  const strengthCalibrationUsed = calibratedExercises.length > 0;
+
+  const payloadHasStrengthCalibration = Boolean(
+    input.athleteProfile &&
+      typeof input.athleteProfile === "object" &&
+      "strengthCalibration" in (input.athleteProfile as Record<string, unknown>) &&
+      (input.athleteProfile as Record<string, unknown>).strengthCalibration &&
+      typeof (input.athleteProfile as Record<string, unknown>).strengthCalibration === "object",
+  );
+  const decisionContextHasStrengthCalibration = Boolean(
+    input.aiDecisionContext?.athleteProfile &&
+      typeof input.aiDecisionContext.athleteProfile === "object" &&
+      "strengthCalibration" in (input.aiDecisionContext.athleteProfile as Record<string, unknown>) &&
+      (input.aiDecisionContext.athleteProfile as Record<string, unknown>).strengthCalibration &&
+      typeof (input.aiDecisionContext.athleteProfile as Record<string, unknown>).strengthCalibration ===
+        "object",
+  );
+
+  const existing = (r.aiDebug ?? {}) as Partial<SuggestNextWorkoutAiDebug>;
   const aiDebug: SuggestNextWorkoutAiDebug = {
+    ...existing,
     ...base,
+    strengthCalibrationUsed,
+    calibratedExercises: strengthCalibrationUsed ? calibratedExercises : [],
+    strengthCalibrationDebug: {
+      payloadHasStrengthCalibration,
+      decisionContextHasStrengthCalibration,
+    },
     ...(process.env.NODE_ENV === "development" && insightMeta
       ? {
           insightSource: insightMeta.source,

@@ -1,5 +1,10 @@
 import { db } from "./database";
-import type { AthleteProfile, AthleteTrainingGoal } from "@/types/athleteProfile";
+import type {
+  AthleteProfile,
+  AthleteTrainingGoal,
+  StrengthCalibration,
+  StrengthCalibrationEntry,
+} from "@/types/athleteProfile";
 import type { TrainingPhase } from "@/types/trainingShared";
 
 export const ATHLETE_PROFILE_ID = "default" as const;
@@ -54,6 +59,36 @@ function rowToProfile(raw: unknown): AthleteProfile {
     r.goal,
     typeof r.notes === "string" ? r.notes : undefined,
   );
+
+  function normalizeCalibrationEntry(x: unknown): StrengthCalibrationEntry | undefined {
+    if (!x || typeof x !== "object") return undefined;
+    const o = x as Record<string, unknown>;
+    const w = Number(o.weight);
+    const reps = Number(o.reps);
+    if (!Number.isFinite(w) || w <= 0) return undefined;
+    if (!Number.isFinite(reps) || reps <= 0) return undefined;
+    return { weight: w, reps: Math.round(reps) };
+  }
+
+  function normalizeStrengthCalibration(x: unknown): StrengthCalibration | undefined {
+    if (!x || typeof x !== "object") return undefined;
+    const o = x as Record<string, unknown>;
+    const out: StrengthCalibration = {
+      benchPress: normalizeCalibrationEntry(o.benchPress),
+      squatOrLegPress: normalizeCalibrationEntry(o.squatOrLegPress),
+      deadliftOrRdl: normalizeCalibrationEntry(o.deadliftOrRdl),
+      latPulldownOrPullup: normalizeCalibrationEntry(o.latPulldownOrPullup),
+      shoulderPress: normalizeCalibrationEntry(o.shoulderPress),
+    };
+    const any =
+      out.benchPress ||
+      out.squatOrLegPress ||
+      out.deadliftOrRdl ||
+      out.latPulldownOrPullup ||
+      out.shoulderPress;
+    return any ? out : undefined;
+  }
+
   return {
     id: ATHLETE_PROFILE_ID,
     createdAt: typeof r.createdAt === "string" ? r.createdAt : ts,
@@ -92,6 +127,7 @@ function rowToProfile(raw: unknown): AthleteProfile {
       ? (r.limitations as string[]).filter((x) => typeof x === "string")
       : undefined,
     notes: n2,
+    strengthCalibration: normalizeStrengthCalibration(r.strengthCalibration),
   };
 }
 

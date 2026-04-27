@@ -25,6 +25,7 @@ export function serializeAthleteProfileForAi(
   if (p.equipment) out.equipment = p.equipment;
   if (p.limitations && p.limitations.length > 0) out.limitations = p.limitations;
   if (p.notes?.trim()) out.notes = p.notes.trim();
+  if (p.strengthCalibration) out.strengthCalibration = p.strengthCalibration;
   if (p.phase) out.planningPhase = p.phase;
   if (p.offCycleDate?.trim()) out.offCycleDate = p.offCycleDate.trim();
   return out;

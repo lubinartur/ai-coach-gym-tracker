@@ -100,17 +100,43 @@ export type SuggestNextWorkoutAiDebug = {
     traceId: string;
     entries: import("@/types/decisionTrace").DecisionTraceEntry[];
   };
-  lastWorkoutTitle: string;
+  lastWorkoutTitle?: string;
   performedAt?: string;
-  createdAt: string;
-  lastWorkoutSplit: string;
-  guardActive: boolean;
-  preferredNextSplits: string[];
+  createdAt?: string;
+  lastWorkoutSplit?: string;
+  guardActive?: boolean;
+  preferredNextSplits?: string[];
   splitSelection?: {
     recommendedSplit: string;
     candidates: { split: string; score: number }[];
     reason: string;
   };
+  /** Whether onboarding strength calibration was used to seed any baseline loads. */
+  strengthCalibrationUsed?: boolean;
+  /** List of exercises whose baseline loads were seeded from calibration. */
+  calibratedExercises?: Array<{
+    exercise: string;
+    sourceLift: string;
+    estimatedWeight: number;
+  }>;
+  /** Debug payload visibility for calibration. */
+  strengthCalibrationDebug?: {
+    payloadHasStrengthCalibration: boolean;
+    decisionContextHasStrengthCalibration: boolean;
+  };
+  /** Per-exercise load source tracing (development only). */
+  exerciseLoadDebug?: Array<{
+    exercise: string;
+    programmedLoad: number | null;
+    calibrationMatch: boolean;
+    calibrationWeight: number | null;
+    finalWeight: number;
+    source: "calibration" | "llm" | "history" | "fallback";
+  }>;
+
+  coachModeProfileApplied?: boolean;
+  coachModeSource?: "profile_starter";
+  coachModeReason?: string;
 };
 
 export type SuggestNextWorkoutResponse = {

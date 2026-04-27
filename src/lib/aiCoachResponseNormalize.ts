@@ -330,6 +330,79 @@ export function normalizeSuggestNextResponseClient(
                   (x): x is string => typeof x === "string",
                 )
               : [],
+            strengthCalibrationUsed:
+              typeof d.strengthCalibrationUsed === "boolean"
+                ? d.strengthCalibrationUsed
+                : undefined,
+            calibratedExercises: Array.isArray(d.calibratedExercises)
+              ? d.calibratedExercises
+                  .filter((x) => x && typeof x === "object")
+                  .map((x) => {
+                    const c = x as Record<string, unknown>;
+                    return {
+                      exercise: typeof c.exercise === "string" ? c.exercise : "",
+                      sourceLift: typeof c.sourceLift === "string" ? c.sourceLift : "",
+                      estimatedWeight:
+                        typeof c.estimatedWeight === "number" && Number.isFinite(c.estimatedWeight)
+                          ? c.estimatedWeight
+                          : 0,
+                    };
+                  })
+                  .filter((x) => x.exercise && x.sourceLift && x.estimatedWeight > 0)
+              : undefined,
+            strengthCalibrationDebug:
+              d.strengthCalibrationDebug && typeof d.strengthCalibrationDebug === "object"
+                ? (() => {
+                    const s = d.strengthCalibrationDebug as Record<string, unknown>;
+                    return {
+                      payloadHasStrengthCalibration: s.payloadHasStrengthCalibration === true,
+                      decisionContextHasStrengthCalibration:
+                        s.decisionContextHasStrengthCalibration === true,
+                    };
+                  })()
+                : undefined,
+            exerciseLoadDebug: Array.isArray(d.exerciseLoadDebug)
+              ? d.exerciseLoadDebug
+                  .filter((x) => x && typeof x === "object")
+                  .map((x) => {
+                    const row = x as Record<string, unknown>;
+                    const source =
+                      row.source === "calibration" ||
+                      row.source === "llm" ||
+                      row.source === "history" ||
+                      row.source === "fallback"
+                        ? (row.source as "calibration" | "llm" | "history" | "fallback")
+                        : "fallback";
+                    return {
+                      exercise: typeof row.exercise === "string" ? row.exercise : "",
+                      programmedLoad:
+                        typeof row.programmedLoad === "number" && Number.isFinite(row.programmedLoad)
+                          ? row.programmedLoad
+                          : null,
+                      calibrationMatch: row.calibrationMatch === true,
+                      calibrationWeight:
+                        typeof row.calibrationWeight === "number" && Number.isFinite(row.calibrationWeight)
+                          ? row.calibrationWeight
+                          : null,
+                      finalWeight:
+                        typeof row.finalWeight === "number" && Number.isFinite(row.finalWeight)
+                          ? row.finalWeight
+                          : 0,
+                      source,
+                    };
+                  })
+                  .filter((x) => x.exercise && x.finalWeight >= 0)
+              : undefined,
+            coachModeProfileApplied:
+              typeof d.coachModeProfileApplied === "boolean"
+                ? d.coachModeProfileApplied
+                : undefined,
+            coachModeSource:
+              d.coachModeSource === "profile_starter"
+                ? "profile_starter"
+                : undefined,
+            coachModeReason:
+              typeof d.coachModeReason === "string" ? d.coachModeReason : undefined,
             splitSelection:
               d.splitSelection && typeof d.splitSelection === "object"
                 ? (() => {

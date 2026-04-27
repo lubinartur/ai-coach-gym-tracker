@@ -51,6 +51,7 @@ import { addTrace } from "@/services/decisionTrace";
 import { evaluateLoadManagement } from "@/services/loadManagementEngine";
 import type { LoadManagementState } from "@/services/loadManagementEngine";
 import { EXERCISE_METADATA_V1 } from "@/data/exerciseMetadata";
+import { estimateBaselineWeightForExerciseFromCalibration } from "@/lib/strengthCalibration";
 
 const SESSION_TYPES = [
   "Normal progression",
@@ -349,7 +350,43 @@ function buildDefaultWorkingSetsForExercise(
     (b) => normalizeExerciseName(b.name) === normalizeExerciseName(name),
   );
   const last = base?.latestSets?.find((s) => (s.weight ?? 0) > 0 && (s.reps ?? 0) > 0) ?? null;
-  const w = last ? Math.max(0, Number(last.weight) || 0) : 20;
+  const athleteProfileLoose =
+    (input.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ??
+    (input.athleteProfile as Record<string, unknown> | undefined) ??
+    {};
+  const scRaw = athleteProfileLoose.strengthCalibration;
+  const sc =
+    scRaw && typeof scRaw === "object"
+      ? (scRaw as {
+          benchPress?: { weight: number; reps: number };
+          squatOrLegPress?: { weight: number; reps: number };
+          deadliftOrRdl?: { weight: number; reps: number };
+          latPulldownOrPullup?: { weight: number; reps: number };
+          shoulderPress?: { weight: number; reps: number };
+        })
+      : undefined;
+  const expRaw = athleteProfileLoose.experience;
+  const exp =
+    expRaw === "beginner" || expRaw === "intermediate" || expRaw === "advanced"
+      ? expRaw
+      : undefined;
+  const limitationsRaw = athleteProfileLoose.limitations;
+  const limitations = Array.isArray(limitationsRaw)
+    ? limitationsRaw.filter((x) => typeof x === "string")
+    : undefined;
+
+  const est = last
+    ? null
+    : estimateBaselineWeightForExerciseFromCalibration({
+        exerciseName: name,
+        calibration: sc,
+        experience: exp,
+        limitations,
+      });
+
+  const w = last
+    ? Math.max(0, Number(last.weight) || 0)
+    : (est?.weight ?? 20);
   const r = last ? Math.max(0, Math.round(Number(last.reps) || 0)) : 10;
   return [{ weight: w, reps: r }, { weight: w, reps: r }, { weight: w, reps: r }];
 }
@@ -360,8 +397,13 @@ function buildExercisesFromStructureAndProgramming(input: {
   programmed: ParsedProgrammedExercise[];
   runtime: EngineRuntimeContext;
   loadManagement?: LoadManagementState;
-}): { exercises: SuggestNextWorkoutResponse["exercises"]; warnings: string[] } {
+}): {
+  exercises: SuggestNextWorkoutResponse["exercises"];
+  warnings: string[];
+  exerciseLoadDebug: NonNullable<SuggestNextWorkoutResponse["aiDebug"]>["exerciseLoadDebug"];
+} {
   const warnings: string[] = [];
+  const exerciseLoadDebug: NonNullable<SuggestNextWorkoutResponse["aiDebug"]>["exerciseLoadDebug"] = [];
   const byExercise = new Map<string, ParsedProgrammedExercise>();
   for (const p of input.programmed) {
     byExercise.set(p.exercise, p);
@@ -389,7 +431,62 @@ function buildExercisesFromStructureAndProgramming(input: {
     const loadParsed = p ? parseLoadReps(p.load) : undefined;
 
     const defaults = buildDefaultWorkingSetsForExercise(s.exercise, input.payload);
-    const baseWeight = loadParsed?.load ?? defaults[0]?.weight ?? 20;
+    const programmedLoad = typeof loadParsed?.load === "number" && Number.isFinite(loadParsed.load)
+      ? loadParsed.load
+      : null;
+
+    // If the model returns a generic "20kg" style load on a baseline session,
+    // allow calibration-based defaults to override it.
+    const baseline = (input.payload.trainingSignals?.exerciseBaselines ?? []).find(
+      (b) => normalizeExerciseName(b.name) === normalizeExerciseName(s.exercise),
+    );
+    const hasHistory = Boolean(
+      baseline?.latestSets?.some((st) => (st.weight ?? 0) > 0 && (st.reps ?? 0) > 0),
+    );
+    const athleteProfileLoose =
+      (input.payload.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ??
+      (input.payload.athleteProfile as Record<string, unknown> | undefined) ??
+      {};
+    const scRaw = athleteProfileLoose.strengthCalibration;
+    const sc =
+      scRaw && typeof scRaw === "object"
+        ? (scRaw as {
+            benchPress?: { weight: number; reps: number };
+            squatOrLegPress?: { weight: number; reps: number };
+            deadliftOrRdl?: { weight: number; reps: number };
+            latPulldownOrPullup?: { weight: number; reps: number };
+            shoulderPress?: { weight: number; reps: number };
+          })
+        : undefined;
+    const expRaw = athleteProfileLoose.experience;
+    const exp =
+      expRaw === "beginner" || expRaw === "intermediate" || expRaw === "advanced"
+        ? expRaw
+        : undefined;
+    const limitationsRaw = athleteProfileLoose.limitations;
+    const limitations = Array.isArray(limitationsRaw)
+      ? limitationsRaw.filter((x) => typeof x === "string")
+      : undefined;
+    const calib = estimateBaselineWeightForExerciseFromCalibration({
+      exerciseName: s.exercise,
+      calibration: sc,
+      experience: exp,
+      limitations,
+    });
+    const calibrationWeight = calib?.weight ?? null;
+    const calibrationMatch = Boolean(calib && calibrationWeight && calibrationWeight > 0);
+
+    const shouldOverrideGeneric =
+      !hasHistory &&
+      calibrationMatch &&
+      programmedLoad != null &&
+      programmedLoad > 0 &&
+      programmedLoad <= 25;
+
+    const baseWeight =
+      !hasHistory && calibrationMatch && (programmedLoad == null || shouldOverrideGeneric)
+        ? (calibrationWeight as number)
+        : (programmedLoad ?? defaults[0]?.weight ?? 20);
     const baseReps = loadParsed?.reps ?? repsParsed ?? defaults[0]?.reps ?? 10;
     const finalWeight =
       lmIntMult !== 1
@@ -434,6 +531,24 @@ function buildExercisesFromStructureAndProgramming(input: {
       decision_label: DEFAULT_DECISION_LABEL.maintain,
       reason: cap(lmNote ? `${progNote}; ${lmNote}` : progNote, MAX_EXERCISE_REASON),
     });
+
+    const source: NonNullable<NonNullable<SuggestNextWorkoutResponse["aiDebug"]>["exerciseLoadDebug"]>[number]["source"] =
+      hasHistory
+        ? "history"
+        : !hasHistory && calibrationMatch && (programmedLoad == null || shouldOverrideGeneric)
+          ? "calibration"
+          : programmedLoad != null
+            ? "llm"
+            : "fallback";
+
+    exerciseLoadDebug.push({
+      exercise: s.exercise,
+      programmedLoad,
+      calibrationMatch,
+      calibrationWeight,
+      finalWeight,
+      source,
+    });
   }
 
   // Detect extras in programmed list (should not happen; prompt forbids).
@@ -443,7 +558,7 @@ function buildExercisesFromStructureAndProgramming(input: {
     }
   }
 
-  return { exercises: out, warnings };
+  return { exercises: out, warnings, exerciseLoadDebug };
 }
 
 function padExercisesToSkeleton(
@@ -717,6 +832,9 @@ function finalizeResponse(
     warnings,
     recoverySummary,
     volumeSummary,
+    aiDebug: {
+      exerciseLoadDebug: merged.exerciseLoadDebug ?? [],
+    },
   };
 }
 
@@ -1011,11 +1129,7 @@ function buildSplitGuardFallbackSuggestion(
   const last = g?.lastWorkoutSplit ?? "Unknown";
   const exercises: SuggestNextWorkoutResponse["exercises"] = [...t.exercises].map((name) => ({
     name,
-    sets: [
-      { weight: 20, reps: 10 },
-      { weight: 20, reps: 10 },
-      { weight: 20, reps: 10 },
-    ],
+    sets: buildDefaultWorkingSetsForExercise(name, input),
     decision: "maintain",
     decision_label: DEFAULT_DECISION_LABEL.maintain,
     reason: cap(
@@ -1068,56 +1182,182 @@ function parseAndFinalize(
 function coachTemplateSuggestion(input: AiCoachRequestPayload): SuggestNextWorkoutResponse {
   const lang = input.language ?? "en";
   const ru = lang === "ru";
-  const preferred =
-    input.aiDecisionContext?.splitContinuityGuard?.preferredNextSplits?.[0] ?? "Push";
-  const split = preferred === "Pull" || preferred === "Legs" ? preferred : "Push";
+  const profile =
+    (input.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ??
+    (input.athleteProfile as Record<string, unknown> | undefined) ??
+    {};
+  const expRaw = profile.experience;
+  const experience =
+    expRaw === "beginner" || expRaw === "intermediate" || expRaw === "advanced"
+      ? expRaw
+      : undefined;
+  const daysRaw = profile.trainingDaysPerWeek;
+  const days =
+    typeof daysRaw === "number" && Number.isFinite(daysRaw) ? Math.max(0, Math.round(daysRaw)) : null;
+  const goalRaw = profile.goal;
+  const goal =
+    goalRaw === "build_muscle" ||
+    goalRaw === "lose_fat" ||
+    goalRaw === "recomposition" ||
+    goalRaw === "strength" ||
+    goalRaw === "general_fitness"
+      ? goalRaw
+      : null;
+
+  const durationMin = (() => {
+    const d = input.customWorkoutRequest?.durationMin;
+    if (typeof d === "number" && Number.isFinite(d)) return Math.max(20, Math.min(120, Math.round(d)));
+    return 45;
+  })();
+
+  const focus: "hypertrophy" | "strength" | "light" = (() => {
+    if (goal === "strength") return "strength";
+    if (goal === "general_fitness") return "light";
+    return "hypertrophy";
+  })();
+
+  const splitPlan: { label: string; slots: import("@/lib/workoutSkeleton").SkeletonSlot[] } = (() => {
+    const lim = Array.isArray(profile.limitations) ? profile.limitations.map((x) => String(x).toLowerCase()) : [];
+    const avoidLower = lim.includes("knees") || lim.includes("lower_back");
+
+    if (days != null && days <= 3) {
+      return {
+        label: "Full",
+        slots: ["quad_compound", "chest_press", "vertical_pull", "hinge", "shoulder_press", "core"],
+      };
+    }
+    if (days === 4) {
+      if (avoidLower) {
+        return {
+          label: "Upper",
+          slots: ["chest_press", "horizontal_pull", "shoulder_press", "vertical_pull", "triceps", "biceps"],
+        };
+      }
+      // Default to Upper as a starter for 4-day programs.
+      return {
+        label: "Upper",
+        slots: ["chest_press", "horizontal_pull", "shoulder_press", "vertical_pull", "triceps", "biceps"],
+      };
+    }
+    if (days != null && days >= 5) {
+      // For new users: default Push for intermediate/advanced hypertrophy, Full for beginners.
+      if (experience === "beginner") {
+        return {
+          label: "Full",
+          slots: ["quad_compound", "chest_press", "vertical_pull", "hinge", "shoulder_press", "core"],
+        };
+      }
+      const pushSlots = getWorkoutSkeleton("Push");
+      return { label: "Push", slots: pushSlots };
+    }
+    // Fallback when frequency missing.
+    if (experience === "beginner") {
+      return {
+        label: "Full",
+        slots: ["quad_compound", "chest_press", "vertical_pull", "hinge", "shoulder_press", "core"],
+      };
+    }
+    if (focus === "hypertrophy") {
+      return { label: "Push", slots: getWorkoutSkeleton("Push") };
+    }
+    return { label: "Full", slots: ["quad_compound", "chest_press", "vertical_pull", "hinge", "core"] };
+  })();
+
+  const targetExerciseCount = (() => {
+    if (durationMin <= 30) return 4;
+    if (durationMin <= 45) return 5;
+    if (durationMin <= 60) return 6;
+    if (durationMin <= 75) return 7;
+    return 7;
+  })();
+
   const used = new Set<string>();
-  const names = getWorkoutSkeleton(split).map((slot) => {
-    const name = pickExerciseForSlot(slot, used);
-    used.add(name);
-    return name;
-  });
-  const baselines = new Map(
-    (input.trainingSignals?.exerciseBaselines ?? []).map((b) => [normalizeExerciseName(b.name), b]),
-  );
+  const names = splitPlan.slots
+    .slice(0, Math.max(3, Math.min(targetExerciseCount, splitPlan.slots.length)))
+    .map((slot) => {
+      const name = pickExerciseForSlot(slot, used);
+      used.add(name);
+      return { name, slot };
+    });
+
+  function isCompoundSlot(slot: import("@/lib/workoutSkeleton").SkeletonSlot): boolean {
+    return (
+      slot === "quad_compound" ||
+      slot === "hinge" ||
+      slot === "chest_press" ||
+      slot === "vertical_pull" ||
+      slot === "horizontal_pull" ||
+      slot === "shoulder_press"
+    );
+  }
+
+  function schemeFor(slot: import("@/lib/workoutSkeleton").SkeletonSlot): { sets: number; reps: number } {
+    if (focus === "light") return { sets: 2, reps: 11 };
+    const compound = isCompoundSlot(slot);
+    if (focus === "strength") {
+      // Avoid very heavy low-rep starter for beginner/intermediate.
+      const reps = experience === "advanced" ? 7 : 8;
+      return { sets: compound ? 3 : 2, reps: compound ? reps : 10 };
+    }
+    // hypertrophy
+    return { sets: compound ? 3 : 2, reps: compound ? 10 : 12 };
+  }
+
   const fatigue = input.trainingSignals?.fatigueSignal ?? "unknown";
-  const targetSetCount = fatigue === "high" ? 2 : 3;
-
-  const exercises: SuggestNextWorkoutResponse["exercises"] = names.map((name, idx) => {
-    const base = baselines.get(normalizeExerciseName(name));
-    const last = base?.latestSets?.[0];
-    const w = last ? Math.max(0, Number(last.weight) || 0) : 20;
-    const r = last ? Math.max(0, Math.round(Number(last.reps) || 0)) : 10;
-    const sets = Array.from({ length: targetSetCount }, () => ({ weight: w, reps: r }));
-
-    // Simple template progression: first 2 exercises +1 rep.
-    const shouldInc = idx < 2;
-    const finalSets = shouldInc ? sets.map((s) => ({ ...s, reps: s.reps + 1 })) : sets;
+  const exercises: SuggestNextWorkoutResponse["exercises"] = names.map(({ name, slot }) => {
+    const defaults = buildDefaultWorkingSetsForExercise(name, input);
+    const w = defaults[0]?.weight ?? 20;
+    const s = schemeFor(slot);
+    const sets = Array.from({ length: s.sets }, () => ({ weight: w, reps: s.reps }));
     return {
       name,
-      sets: finalSets,
-      decision: shouldInc ? "increase" : "maintain",
-      decision_label: shouldInc ? (ru ? "+1 повторение" : "+1 rep") : (ru ? "Стабильная нагрузка" : "Maintain"),
-      reason: ru ? "Шаблонная тренировка: простая прогрессия по повторениям." : "Template session: simple rep progression.",
+      sets,
+      decision: "maintain",
+      decision_label: ru ? "Стабильная нагрузка" : "Maintain",
+      reason:
+        ru
+          ? "Стартовая тренировка от тренера: базовая структура и безопасные диапазоны повторений."
+          : "Coach starter: structured session with safe rep ranges.",
     };
   });
 
+  const title = (() => {
+    const f = focus === "strength" ? "Strength" : focus === "light" ? "Light" : "Hypertrophy";
+    return `Coach ${splitPlan.label} ${f}`;
+  })();
+
+  const coachModeReason = (() => {
+    const parts = [
+      `split:${splitPlan.label}`,
+      `duration:${durationMin}m`,
+      `focus:${focus}`,
+      experience ? `experience:${experience}` : null,
+      days != null ? `days:${days}/wk` : null,
+    ].filter(Boolean);
+    return `Profile-driven starter session (${parts.join(", ")})`;
+  })();
+
   const out: SuggestNextWorkoutResponse = {
-    title: split,
+    title,
     session_type: "Normal progression",
-    confidence: 62,
+    confidence: 66,
     reason: ru
-      ? "Тренировка по каркасу: стабильная структура и простая прогрессия в ключевых упражнениях."
-      : "Coach skeleton session: stable structure with simple progression on key lifts.",
+      ? "Стартовая тренировка от тренера на основе профиля: цель, опыт, частота и ограничения."
+      : "Coach-recommended starter session based on your profile (goal, experience, frequency, limitations).",
     training_signals: {
-      split,
+      split: splitPlan.label,
       fatigue,
       volume_trend: "unknown",
-      strategy: ru ? "Каркас + базовая прогрессия" : "Skeleton + basic progression",
+      strategy: ru ? "Профиль → стартовая схема" : "Profile → starter template",
     },
     insights: [],
     exercises,
     warnings: [],
+    aiDebug: {
+      coachModeProfileApplied: true,
+      coachModeSource: "profile_starter",
+      coachModeReason,
+    },
   };
   return out;
 }

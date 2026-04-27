@@ -3,17 +3,19 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { getOrCreateAthleteProfile, saveAthleteProfile } from "@/db/athleteProfile";
+import { getOrCreateSettings } from "@/db/settings";
 import type {
   AthleteEquipment,
   AthleteExperience,
   AthleteProfile,
   AthleteTrainingGoal,
 } from "@/types/athleteProfile";
+import type { AppLanguage } from "@/i18n/language";
 import { Button } from "@/components/ui/Button";
 import { TextArea } from "@/components/ui/TextArea";
 import { TextField } from "@/components/ui/TextField";
 
-const TOTAL_STEPS = 8;
+const TOTAL_STEPS = 9;
 
 const goals: { value: AthleteTrainingGoal; label: string }[] = [
   { value: "build_muscle", label: "Build muscle" },
@@ -63,6 +65,7 @@ export function OnboardingView() {
   const [step, setStep] = useState(1);
   const [saving, setSaving] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [lang, setLang] = useState<AppLanguage>("en");
 
   const [sex, setSex] = useState<"male" | "female" | "other" | "">("");
   const [age, setAge] = useState("");
@@ -74,6 +77,26 @@ export function OnboardingView() {
   const [equipment, setEquipment] = useState<AthleteEquipment | "">("");
   const [limitations, setLimitations] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
+
+  const [benchWeight, setBenchWeight] = useState("");
+  const [benchReps, setBenchReps] = useState("");
+  const [squatWeight, setSquatWeight] = useState("");
+  const [squatReps, setSquatReps] = useState("");
+  const [deadliftWeight, setDeadliftWeight] = useState("");
+  const [deadliftReps, setDeadliftReps] = useState("");
+  const [latWeight, setLatWeight] = useState("");
+  const [latReps, setLatReps] = useState("");
+  const [pressWeight, setPressWeight] = useState("");
+  const [pressReps, setPressReps] = useState("");
+
+  const loadLanguage = useCallback(async () => {
+    try {
+      const s = await getOrCreateSettings();
+      setLang(s.language === "ru" ? "ru" : "en");
+    } catch {
+      setLang("en");
+    }
+  }, []);
 
   const loadProfile = useCallback(async () => {
     try {
@@ -88,17 +111,41 @@ export function OnboardingView() {
       if (p.equipment) setEquipment(p.equipment);
       if (p.limitations?.length) setLimitations(p.limitations);
       if (p.notes) setNotes(p.notes);
+      const sc = p.strengthCalibration;
+      if (sc?.benchPress) {
+        setBenchWeight(String(sc.benchPress.weight));
+        setBenchReps(String(sc.benchPress.reps));
+      }
+      if (sc?.squatOrLegPress) {
+        setSquatWeight(String(sc.squatOrLegPress.weight));
+        setSquatReps(String(sc.squatOrLegPress.reps));
+      }
+      if (sc?.deadliftOrRdl) {
+        setDeadliftWeight(String(sc.deadliftOrRdl.weight));
+        setDeadliftReps(String(sc.deadliftOrRdl.reps));
+      }
+      if (sc?.latPulldownOrPullup) {
+        setLatWeight(String(sc.latPulldownOrPullup.weight));
+        setLatReps(String(sc.latPulldownOrPullup.reps));
+      }
+      if (sc?.shoulderPress) {
+        setPressWeight(String(sc.shoulderPress.weight));
+        setPressReps(String(sc.shoulderPress.reps));
+      }
     } catch (e) {
       setLoadErr(e instanceof Error ? e.message : "Could not load profile");
     }
   }, []);
 
   useEffect(() => {
+    queueMicrotask(() => {
+      void loadLanguage();
+    });
     if (!edit) return;
     queueMicrotask(() => {
       void loadProfile();
     });
-  }, [edit, loadProfile]);
+  }, [edit, loadLanguage, loadProfile]);
 
   function toggleLimit(id: string) {
     if (id === "none") {
@@ -123,6 +170,28 @@ export function OnboardingView() {
       const ageN = age.trim() ? Math.max(0, Math.round(Number(age))) : undefined;
       const h = heightCm.trim() ? Math.max(0, Number(heightCm)) : undefined;
       const w = weightKg.trim() ? Math.max(0, Number(weightKg)) : undefined;
+
+      const parseEntry = (weight: string, reps: string) => {
+        const ww = Number(weight);
+        const rr = Number(reps);
+        if (!Number.isFinite(ww) || ww <= 0) return undefined;
+        if (!Number.isFinite(rr) || rr <= 0) return undefined;
+        return { weight: ww, reps: Math.round(rr) };
+      };
+      const strengthCalibration = {
+        benchPress: parseEntry(benchWeight, benchReps),
+        squatOrLegPress: parseEntry(squatWeight, squatReps),
+        deadliftOrRdl: parseEntry(deadliftWeight, deadliftReps),
+        latPulldownOrPullup: parseEntry(latWeight, latReps),
+        shoulderPress: parseEntry(pressWeight, pressReps),
+      };
+      const anyCalibration =
+        strengthCalibration.benchPress ||
+        strengthCalibration.squatOrLegPress ||
+        strengthCalibration.deadliftOrRdl ||
+        strengthCalibration.latPulldownOrPullup ||
+        strengthCalibration.shoulderPress;
+
       await saveAthleteProfile({
         sex: sex || undefined,
         age: ageN !== undefined && Number.isFinite(ageN) ? ageN : undefined,
@@ -135,6 +204,7 @@ export function OnboardingView() {
         equipment: equipment || undefined,
         limitations: limitations.length ? limitations : undefined,
         notes: notes.trim() || undefined,
+        strengthCalibration: anyCalibration ? strengthCalibration : undefined,
         onboardingCompleted: true,
         updatedAt: now,
       });
@@ -300,6 +370,137 @@ export function OnboardingView() {
       )}
 
       {step === 7 && (
+        <section className="space-y-4">
+          <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
+            {lang === "ru" ? "Рабочие веса" : "Known working weights"}
+          </h1>
+          <p className="text-sm text-neutral-500">
+            {lang === "ru"
+              ? "Добавь несколько известных весов. Этот шаг можно пропустить."
+              : "Add a few lifts you know. You can skip this."}
+          </p>
+
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-neutral-800/80 bg-neutral-950/40 p-3">
+              <p className="mb-2 text-sm font-semibold text-neutral-200">Bench Press</p>
+              <div className="grid grid-cols-2 gap-3">
+                <TextField
+                  label="kg"
+                  inputMode="decimal"
+                  value={benchWeight}
+                  onChange={(e) => setBenchWeight(e.target.value.replace(/[^\d.]/g, ""))}
+                  placeholder="80"
+                />
+                <TextField
+                  label={lang === "ru" ? "повт." : "reps"}
+                  inputMode="numeric"
+                  value={benchReps}
+                  onChange={(e) => setBenchReps(e.target.value.replace(/[^\d]/g, ""))}
+                  placeholder="8"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-neutral-800/80 bg-neutral-950/40 p-3">
+              <p className="mb-2 text-sm font-semibold text-neutral-200">
+                Squat or Leg Press
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <TextField
+                  label="kg"
+                  inputMode="decimal"
+                  value={squatWeight}
+                  onChange={(e) => setSquatWeight(e.target.value.replace(/[^\d.]/g, ""))}
+                  placeholder="120"
+                />
+                <TextField
+                  label={lang === "ru" ? "повт." : "reps"}
+                  inputMode="numeric"
+                  value={squatReps}
+                  onChange={(e) => setSquatReps(e.target.value.replace(/[^\d]/g, ""))}
+                  placeholder="6"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-neutral-800/80 bg-neutral-950/40 p-3">
+              <p className="mb-2 text-sm font-semibold text-neutral-200">
+                Romanian Deadlift or Deadlift
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <TextField
+                  label="kg"
+                  inputMode="decimal"
+                  value={deadliftWeight}
+                  onChange={(e) => setDeadliftWeight(e.target.value.replace(/[^\d.]/g, ""))}
+                  placeholder="140"
+                />
+                <TextField
+                  label={lang === "ru" ? "повт." : "reps"}
+                  inputMode="numeric"
+                  value={deadliftReps}
+                  onChange={(e) => setDeadliftReps(e.target.value.replace(/[^\d]/g, ""))}
+                  placeholder="5"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-neutral-800/80 bg-neutral-950/40 p-3">
+              <p className="mb-2 text-sm font-semibold text-neutral-200">
+                Lat Pulldown or Pull-up
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <TextField
+                  label="kg"
+                  inputMode="decimal"
+                  value={latWeight}
+                  onChange={(e) => setLatWeight(e.target.value.replace(/[^\d.]/g, ""))}
+                  placeholder="70"
+                />
+                <TextField
+                  label={lang === "ru" ? "повт." : "reps"}
+                  inputMode="numeric"
+                  value={latReps}
+                  onChange={(e) => setLatReps(e.target.value.replace(/[^\d]/g, ""))}
+                  placeholder="10"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-neutral-800/80 bg-neutral-950/40 p-3">
+              <p className="mb-2 text-sm font-semibold text-neutral-200">
+                Shoulder Press
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <TextField
+                  label="kg"
+                  inputMode="decimal"
+                  value={pressWeight}
+                  onChange={(e) => setPressWeight(e.target.value.replace(/[^\d.]/g, ""))}
+                  placeholder="45"
+                />
+                <TextField
+                  label={lang === "ru" ? "повт." : "reps"}
+                  inputMode="numeric"
+                  value={pressReps}
+                  onChange={(e) => setPressReps(e.target.value.replace(/[^\d]/g, ""))}
+                  placeholder="8"
+                />
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setStep(8)}
+            className="min-h-11 text-sm text-neutral-500 transition hover:text-neutral-300"
+          >
+            {lang === "ru" ? "Пропустить" : "Skip"}
+          </button>
+        </section>
+      )}
+
+      {step === 8 && (
         <section className="space-y-3">
           <h1 className="text-[28px] font-bold leading-tight text-neutral-50">Limitations</h1>
           <p className="text-sm text-neutral-500">Select all that apply.</p>
@@ -316,7 +517,7 @@ export function OnboardingView() {
         </section>
       )}
 
-      {step === 8 && (
+      {step === 9 && (
         <section className="space-y-3">
           <h1 className="text-[28px] font-bold leading-tight text-neutral-50">Notes</h1>
           <p className="text-sm text-neutral-500">Anything AI should know?</p>

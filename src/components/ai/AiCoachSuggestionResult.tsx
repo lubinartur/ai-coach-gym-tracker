@@ -1113,6 +1113,91 @@ function AiDebugPanel({
               {dbg.insightSource ?? "—"}
             </span>
           </div>
+
+          <div className="space-y-2 border-t border-neutral-800/80 pt-3">
+            <p className="text-neutral-500">Strength calibration</p>
+            <div className="flex items-start justify-between gap-3">
+              <span className="text-neutral-500">Used</span>
+              <span className="text-right font-medium text-neutral-100">
+                {dbg.strengthCalibrationUsed ? "true" : "false"}
+              </span>
+            </div>
+            {dbg.strengthCalibrationDebug ? (
+              <>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-neutral-500">Payload has calibration</span>
+                  <span className="text-right font-medium text-neutral-100">
+                    {dbg.strengthCalibrationDebug.payloadHasStrengthCalibration ? "true" : "false"}
+                  </span>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="text-neutral-500">DecisionContext has calibration</span>
+                  <span className="text-right font-medium text-neutral-100">
+                    {dbg.strengthCalibrationDebug.decisionContextHasStrengthCalibration ? "true" : "false"}
+                  </span>
+                </div>
+              </>
+            ) : null}
+            {dbg.calibratedExercises && dbg.calibratedExercises.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-neutral-500">Calibrated exercises</p>
+                <ul className="list-inside list-disc text-neutral-300">
+                  {dbg.calibratedExercises.slice(0, 12).map((c) => (
+                    <li key={`${c.exercise}-${c.sourceLift}`}>
+                      {c.exercise}: {c.estimatedWeight}kg ({c.sourceLift})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {dbg.exerciseLoadDebug && dbg.exerciseLoadDebug.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-neutral-500">Load source (per exercise)</p>
+                <ul className="space-y-1">
+                  {dbg.exerciseLoadDebug.slice(0, 12).map((row) => (
+                    <li
+                      key={row.exercise}
+                      className="rounded-xl border border-neutral-800/80 bg-neutral-950/30 px-3 py-2"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="font-medium text-neutral-100">{row.exercise}</span>
+                        <span className="text-neutral-400">{row.source}</span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-neutral-400">
+                        <span>programmed: {row.programmedLoad ?? "—"}</span>
+                        <span>calib: {row.calibrationWeight ?? "—"}</span>
+                        <span>final: {row.finalWeight}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+
+          {dbg.generationSource === "coach_skeleton" ? (
+            <div className="space-y-2 border-t border-neutral-800/80 pt-3">
+              <p className="text-neutral-500">Coach mode</p>
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-neutral-500">Profile applied</span>
+                <span className="text-right font-medium text-neutral-100">
+                  {dbg.coachModeProfileApplied ? "true" : "false"}
+                </span>
+              </div>
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-neutral-500">Source</span>
+                <span className="text-right font-medium text-neutral-100">
+                  {dbg.coachModeSource ?? "—"}
+                </span>
+              </div>
+              {dbg.coachModeReason ? (
+                <div className="space-y-1">
+                  <p className="text-neutral-500">Reason</p>
+                  <p className="text-neutral-300">{dbg.coachModeReason}</p>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {dbg.insightWarnings && dbg.insightWarnings.length > 0 ? (
             <div className="space-y-1 border-t border-neutral-800/80 pt-3">
               <p className="text-neutral-500">Insight warnings</p>
@@ -1130,7 +1215,7 @@ function AiDebugPanel({
           <div className="flex items-start justify-between gap-3">
             <span className="text-neutral-500">Preferred splits</span>
             <span className="text-right font-medium text-neutral-100">
-              {dbg.preferredNextSplits.join(" · ") || "—"}
+              {(dbg.preferredNextSplits ?? []).join(" · ") || "—"}
             </span>
           </div>
           {dbg.splitSelection ? (
