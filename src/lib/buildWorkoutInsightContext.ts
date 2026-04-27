@@ -1,6 +1,11 @@
-import { getExerciseMuscleGroup, type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import { type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import type { AiDecisionContext } from "@/types/aiCoach";
 import type { SuggestNextWorkoutResponse } from "@/types/aiCoach";
+import type { Exercise } from "@/types/trainingDiary";
+import {
+  buildCatalogLookup,
+  resolveCatalogRowByExerciseName,
+} from "@/services/exerciseCatalogResolve";
 
 export type WorkoutInsightDecisionType =
   | "increase_reps"
@@ -62,8 +67,13 @@ export function buildWorkoutInsightContext(
   workoutResult: SuggestNextWorkoutResponse,
   aiDecisionContext: AiDecisionContext | null | undefined,
   language: string | undefined,
+  exerciseCatalog: Exercise[] | undefined,
 ): WorkoutInsightContextJson {
   const lang = language === "ru" ? "ru" : "en";
+  const catalogLookup =
+    exerciseCatalog && exerciseCatalog.length > 0
+      ? buildCatalogLookup(exerciseCatalog)
+      : null;
   const split = workoutResult.training_signals?.split?.trim() || "—";
   const last = aiDecisionContext?.recentWorkouts?.[0];
   const g = aiDecisionContext?.splitContinuityGuard;
@@ -77,7 +87,10 @@ export function buildWorkoutInsightContext(
   const maintainedExercises: string[] = [];
 
   const exercises = workoutResult.exercises.map((ex) => {
-    const muscleGroup = getExerciseMuscleGroup(ex.name);
+    const row = catalogLookup
+      ? resolveCatalogRowByExerciseName(ex.name, catalogLookup)
+      : null;
+    const muscleGroup: PrimaryMuscleGroup = row?.primaryMuscle ?? "other";
     const decisionType = inferDecisionType(ex);
     if (decisionType === "reduce") reducedExercises.push(ex.name);
     else if (

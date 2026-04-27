@@ -3,7 +3,9 @@ import {
   MUSCLE_GROUP_CANONICAL,
 } from "@/data/exerciseLibrary";
 import { db } from "@/db/database";
+import { getCatalogExerciseByNormalizedName } from "@/db/exercises";
 import { normalizeExerciseName } from "@/lib/exerciseName";
+import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import type { Exercise, WorkoutExercise, WorkoutSession, WorkoutSet } from "@/types/trainingDiary";
 
 export { normalizeExerciseName };
@@ -23,11 +25,14 @@ export async function getExerciseHistory(
   const key = normalizeExerciseName(exerciseName);
   if (!key) return [];
 
+  const catalogRow = await getCatalogExerciseByNormalizedName(exerciseName);
+  const catalogId = catalogRow?.id;
+
   const sessions = await db.workoutSessions.orderBy("date").reverse().toArray();
   const uses: ExerciseSessionUse[] = [];
 
   for (const s of sessions) {
-    const match = findMatchingExerciseInSession(s, key);
+    const match = findMatchingExerciseInSession(s, key, catalogId);
     if (!match) continue;
     const sets = match.sets.map((set) => ({
       weight: set.weight,
@@ -107,10 +112,12 @@ export async function getExerciseStats(
 function findMatchingExerciseInSession(
   session: WorkoutSession,
   normalizedName: string,
+  catalogId?: string,
 ): WorkoutExercise | undefined {
-  return session.exercises.find(
-    (ex) => normalizeExerciseName(ex.name) === normalizedName,
-  );
+  return session.exercises.find((ex) => {
+    if (catalogId && ex.exerciseId && ex.exerciseId === catalogId) return true;
+    return normalizeExerciseName(ex.name) === normalizedName;
+  });
 }
 
 export function formatSet(set: Pick<WorkoutSet, "weight" | "reps">): string {
@@ -178,13 +185,29 @@ export function mapMuscleGroupStringToCanonical(
 }
 
 /**
+ * `Exercise.primaryMuscle` (engine buckets) → canonical id used in picker + legacy charts.
+ */
+function mapPrimaryEngineMuscleToCanonical(m: PrimaryMuscleGroup | undefined | null): string | undefined {
+  if (m == null) return undefined;
+  // Most engine primaries are already in `MUSCLE_GROUP_CANONICAL`.
+  const asStr = String(m);
+  if (MUSCLE_GROUP_CANONICAL.has(asStr)) return asStr;
+  // e.g. core / forearms not in the legacy canonical set: reuse string mapping.
+  return mapMuscleGroupStringToCanonical(asStr);
+}
+
+/**
  * Resolves a single canonical muscle id (lowercase) from stored fields and library
  * (handles legacy casing, "Core" → abs, and library name match).
  */
 export function resolveCanonicalMuscleForExercise(e: Exercise): string | undefined {
+  const fromPrimary = mapPrimaryEngineMuscleToCanonical(e.primaryMuscle);
+  if (fromPrimary) return fromPrimary;
   const fromField = mapMuscleGroupStringToCanonical(e.muscleGroup);
   if (fromField) return fromField;
-  return getLibraryItemByName(e.name)?.muscleGroup;
+  const fromLib = getLibraryItemByName(e.name)?.muscleGroup;
+  if (fromLib) return mapMuscleGroupStringToCanonical(fromLib) ?? fromLib;
+  return undefined;
 }
 
 /**

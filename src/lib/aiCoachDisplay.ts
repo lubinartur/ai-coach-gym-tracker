@@ -1,4 +1,5 @@
 import type { AppLocale, MessageKey } from "@/i18n/dictionary";
+import { normalizeExerciseName } from "@/lib/exerciseName";
 import {
   isSessionSetWarmup,
   pickWorkingSetForComparison,
@@ -9,6 +10,7 @@ import type {
   ExerciseBaselineForAi,
   ExerciseDecision,
   FatigueSignal,
+  SuggestNextWorkoutAiDebug,
   SuggestNextWorkoutAiExercise,
   TrainingSignals,
   VolumeTrend,
@@ -187,6 +189,32 @@ function formatWeightReps(w: number, r: number): string {
   return `${wn}×${r}`;
 }
 
+/**
+ * One line: “Last time: W×R” from baseline working set (for comparison to today’s first set).
+ * Returns null if no comparable history.
+ */
+export function formatLastTimeFromBaseline(
+  baseline: ExerciseBaselineForAi | null,
+  ex: SuggestNextWorkoutAiExercise,
+  t: T,
+): string | null {
+  if (!baseline?.latestSets?.length) return null;
+  const set = ex.sets[0];
+  if (!set) return null;
+  const comp = pickWorkingSetForComparison(
+    baseline.latestSets.map((s) => ({ weight: s.weight, reps: s.reps })),
+    set.weight,
+    set.reps,
+  );
+  if (!comp) return null;
+  const wn = Math.round(Math.max(0, comp.weight) * 100) / 100;
+  const rn = Math.round(Math.max(0, comp.reps));
+  if (!(wn > 0 && rn > 0)) return null;
+  return t("exercise_baseline_last_time")
+    .replace("{{w}}", String(wn))
+    .replace("{{r}}", String(rn));
+}
+
 /** “Last: W×R → Today: W×R” from baseline and first target set. */
 export function formatLastToTodayLine(
   ex: SuggestNextWorkoutAiExercise,
@@ -209,6 +237,37 @@ export function formatLastToTodayLine(
     }
   }
   return null;
+}
+
+type ExerciseLoadDebugRow = NonNullable<
+  SuggestNextWorkoutAiDebug["exerciseLoadDebug"]
+>[number];
+
+export function findExerciseLoadDebugRow(
+  rows: SuggestNextWorkoutAiDebug["exerciseLoadDebug"] | undefined,
+  exerciseName: string,
+): ExerciseLoadDebugRow | null {
+  if (!rows?.length) return null;
+  const key = normalizeExerciseName(exerciseName);
+  for (const r of rows) {
+    if (normalizeExerciseName(r.exercise) === key) return r;
+  }
+  return null;
+}
+
+export function loadSourceMessageKey(source: ExerciseLoadDebugRow["source"]): MessageKey {
+  switch (source) {
+    case "history":
+      return "ai_coach_load_source_history";
+    case "calibration":
+    case "calibration_rpe":
+      return "ai_coach_load_source_calibration";
+    case "llm":
+      return "ai_coach_load_source_plan";
+    case "fallback":
+    default:
+      return "ai_coach_load_source_fallback";
+  }
 }
 
 export type DecisionKind = "progress" | "maintain" | "volume" | "deload";

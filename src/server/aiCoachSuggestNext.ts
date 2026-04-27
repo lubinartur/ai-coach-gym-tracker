@@ -20,9 +20,8 @@ import {
   inferWorkoutSplitFromTitleAndExercises,
   splitRepetitionViolatesGuard,
 } from "@/lib/workoutSplitInference";
-import { muscleBucket, normalizeSplitLabel } from "@/lib/aiCoach/splitLabels";
+import { normalizeSplitLabel } from "@/lib/aiCoach/splitLabels";
 import { cap } from "@/lib/string/cap";
-import { getExerciseMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import { getWorkoutSkeleton, pickExerciseForSlot, type WorkoutSplit } from "@/lib/workoutSkeleton";
 import { dedupeExercisesGeneric, repairWorkoutBySkeleton } from "@/lib/workoutRoleRepair";
 import {
@@ -36,6 +35,7 @@ import {
   systemPrompt,
 } from "@/server/aiCoach/suggestNext/prompts";
 import { openAiSuggestChat } from "@/server/aiCoach/suggestNext/openaiChat";
+import { applySuggestNextProgressionGuards } from "@/server/aiCoach/suggestNext/progressionGuards";
 import {
   computeConfidenceScore,
   mergeConfidence,
@@ -51,7 +51,17 @@ import { addTrace } from "@/services/decisionTrace";
 import { evaluateLoadManagement } from "@/services/loadManagementEngine";
 import type { LoadManagementState } from "@/services/loadManagementEngine";
 import { EXERCISE_METADATA_V1 } from "@/data/exerciseMetadata";
+import {
+  getAthleteLoadContext,
+  strengthCalibrationHasAny,
+} from "@/lib/aiCoachStrengthCalibrationResolve";
 import { estimateBaselineWeightForExerciseFromCalibration } from "@/lib/strengthCalibration";
+import type { Exercise } from "@/types/trainingDiary";
+import {
+  buildCatalogLookup,
+  exerciseMetadataMatchesWorkoutSplit,
+  resolveCatalogRowByExerciseName,
+} from "@/services/exerciseCatalogResolve";
 
 const SESSION_TYPES = [
   "Normal progression",
@@ -64,6 +74,109 @@ const SESSION_TYPES = [
 const FATIGUE_SET: FatigueSignal[] = ["low", "moderate", "high", "unknown"];
 const VOLUME_SET: VolumeTrend[] = ["up", "down", "stable", "unknown"];
 
+function dedupeExerciseCatalogByNormalizedName(exercises: Exercise[]): Exercise[] {
+  const out: Exercise[] = [];
+  const seen = new Set<string>();
+  for (const ex of exercises) {
+    const k = (ex.normalizedName?.trim() || normalizeExerciseName(ex.name) || "")
+      .trim();
+    if (!k) continue;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(ex);
+  }
+  return out;
+}
+
+/**
+ * Old mixed candidate pool: favorites + recent session names + metadata starter list.
+ * Kept only as a temporary safe fallback if `exerciseCatalog` is missing/empty.
+ */
+function buildLegacyMixedCatalog(payload: AiCoachRequestPayload): Exercise[] {
+  const rawCatalog: Exercise[] = [
+    ...(payload.favorites ?? []).map(
+      (f) =>
+        ({
+          id: "",
+          name: f.name,
+          normalizedName: normalizeExerciseName(f.name),
+          primaryMuscle: "other" as const,
+          equipmentTags: [],
+          movementPattern: "unknown" as const,
+          roleCompatibility: [],
+          contraindications: [],
+          substitutions: [],
+          source: "imported" as const,
+          muscleGroup: f.muscleGroup,
+          equipment: f.equipment,
+          isFavorite: true,
+          createdAt: "",
+          updatedAt: "",
+        }) as Exercise,
+    ),
+    ...((payload.aiDecisionContext?.recentWorkouts ?? [])
+      .flatMap((w) => w.exercises.map((e) => e.name))
+      .map(
+        (name) =>
+          ({
+            id: "",
+            name,
+            normalizedName: normalizeExerciseName(name),
+            primaryMuscle: "other" as const,
+            equipmentTags: [],
+            movementPattern: "unknown" as const,
+            roleCompatibility: [],
+            contraindications: [],
+            substitutions: [],
+            source: "imported" as const,
+            isFavorite: false,
+            muscleGroup: undefined,
+            equipment: undefined,
+            createdAt: "",
+            updatedAt: "",
+          }) as Exercise,
+      )),
+    ...EXERCISE_METADATA_V1.map(
+      (m) =>
+        ({
+          id: "",
+          name: m.name,
+          normalizedName: normalizeExerciseName(m.name),
+          primaryMuscle: m.primaryMuscleGroup,
+          equipmentTags: m.equipmentTags as unknown as never[],
+          movementPattern: m.movementPattern,
+          roleCompatibility: m.roleCompatibility,
+          contraindications: m.contraindications,
+          substitutions: m.substitutions,
+          source: "metadata" as const,
+          isFavorite: false,
+          secondaryMuscles: m.secondaryMuscles,
+          difficulty: m.difficulty,
+          isCompound: m.isCompound,
+          stressLevel: m.stressLevel,
+          bodyweight: (m.equipmentTags ?? []).includes("bodyweight"),
+          muscleGroup: m.primaryMuscleGroup,
+          equipment: m.equipmentTags[0],
+          createdAt: "",
+          updatedAt: "",
+        }) as Exercise,
+    ),
+  ];
+
+  return (() => {
+    const seen = new Set<string>();
+    const out: Exercise[] = [];
+    for (const ex of rawCatalog) {
+      const k = normalizeExerciseName(ex.name);
+      if (!k) continue;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(ex);
+    }
+    return out;
+  })();
+}
+
 const DEFAULT_DECISION_LABEL: Record<ExerciseDecision, string> = {
   increase: "+2.5kg progression",
   maintain: "Maintain weight",
@@ -74,6 +187,27 @@ const DEFAULT_DECISION_LABEL: Record<ExerciseDecision, string> = {
 
 const MAX_LINE = 120;
 const MAX_EXERCISE_REASON = 150;
+const CALIBRATION_PLACEHOLDER_WEIGHT = 10;
+
+function isNewUserPayload(payload: AiCoachRequestPayload): boolean {
+  const recentSessions = payload.recentSessions?.length ?? 0;
+  const recentWorkouts = payload.aiDecisionContext?.recentWorkouts?.length ?? 0;
+  return recentSessions === 0 || recentWorkouts === 0;
+}
+
+function calibrationGlobalNote(lang: AiCoachRequestPayload["language"]): string {
+  const ru = lang === "ru";
+  return ru
+    ? "Это калибровочная тренировка. Выбери вес на RPE 7 — тяжело, но с запасом 2–3 повторения."
+    : "This is your calibration workout. Use a weight that feels like RPE 7 — challenging, but with 2–3 reps in reserve.";
+}
+
+function calibrationExerciseNote(lang: AiCoachRequestPayload["language"]): string {
+  const ru = lang === "ru";
+  return ru
+    ? "Калибровка: начни легко и подстрой вес до RPE 7."
+    : "Calibration: start light and adjust the load to RPE 7.";
+}
 
 function normMuscleId(s: string): string {
   return String(s ?? "").trim().toLowerCase();
@@ -303,35 +437,16 @@ function parseFirstInt(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function isRearDeltOrTrapExercise(name: string): boolean {
-  const s = name.toLowerCase();
-  return (
-    s.includes("rear delt") ||
-    s.includes("rear deltoid") ||
-    s.includes("reverse fly") ||
-    s.includes("face pull") ||
-    s.includes("trap") ||
-    s.includes("shrug")
-  );
-}
-
 function filterExercisesBySplit(
   exercises: SuggestNextWorkoutResponse["exercises"],
   split: "push" | "pull" | "legs" | "full" | "unknown",
+  catalog: Exercise[],
 ): SuggestNextWorkoutResponse["exercises"] {
   if (split === "unknown" || split === "full") return exercises;
+  const lookup = buildCatalogLookup(catalog);
   return exercises.filter((ex) => {
-    const g = getExerciseMuscleGroup(ex.name);
-    if (split === "push") {
-      return g === "chest" || g === "shoulders" || g === "triceps";
-    }
-    if (split === "pull") {
-      // Allow rear delts/traps as shoulder work on pull days.
-      if (g === "shoulders") return isRearDeltOrTrapExercise(ex.name);
-      return g === "back" || g === "biceps" || g === "core" || g === "forearms";
-    }
-    // legs
-    return g === "legs" || g === "hamstrings" || g === "calves";
+    const row = resolveCatalogRowByExerciseName(ex.name, lookup);
+    return exerciseMetadataMatchesWorkoutSplit(row, split);
   });
 }
 
@@ -345,35 +460,13 @@ function toSkeletonSplit(split: "push" | "pull" | "legs" | "full" | "unknown"): 
 function buildDefaultWorkingSetsForExercise(
   name: string,
   input: AiCoachRequestPayload,
+  options?: { isNewUser?: boolean },
 ): { weight: number; reps: number }[] {
   const base = (input.trainingSignals?.exerciseBaselines ?? []).find(
     (b) => normalizeExerciseName(b.name) === normalizeExerciseName(name),
   );
   const last = base?.latestSets?.find((s) => (s.weight ?? 0) > 0 && (s.reps ?? 0) > 0) ?? null;
-  const athleteProfileLoose =
-    (input.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ??
-    (input.athleteProfile as Record<string, unknown> | undefined) ??
-    {};
-  const scRaw = athleteProfileLoose.strengthCalibration;
-  const sc =
-    scRaw && typeof scRaw === "object"
-      ? (scRaw as {
-          benchPress?: { weight: number; reps: number };
-          squatOrLegPress?: { weight: number; reps: number };
-          deadliftOrRdl?: { weight: number; reps: number };
-          latPulldownOrPullup?: { weight: number; reps: number };
-          shoulderPress?: { weight: number; reps: number };
-        })
-      : undefined;
-  const expRaw = athleteProfileLoose.experience;
-  const exp =
-    expRaw === "beginner" || expRaw === "intermediate" || expRaw === "advanced"
-      ? expRaw
-      : undefined;
-  const limitationsRaw = athleteProfileLoose.limitations;
-  const limitations = Array.isArray(limitationsRaw)
-    ? limitationsRaw.filter((x) => typeof x === "string")
-    : undefined;
+  const { strengthCalibration: sc, experience: exp, limitations } = getAthleteLoadContext(input);
 
   const est = last
     ? null
@@ -386,7 +479,7 @@ function buildDefaultWorkingSetsForExercise(
 
   const w = last
     ? Math.max(0, Number(last.weight) || 0)
-    : (est?.weight ?? 20);
+    : (est?.weight ?? (options?.isNewUser ? CALIBRATION_PLACEHOLDER_WEIGHT : 20));
   const r = last ? Math.max(0, Math.round(Number(last.reps) || 0)) : 10;
   return [{ weight: w, reps: r }, { weight: w, reps: r }, { weight: w, reps: r }];
 }
@@ -397,6 +490,7 @@ function buildExercisesFromStructureAndProgramming(input: {
   programmed: ParsedProgrammedExercise[];
   runtime: EngineRuntimeContext;
   loadManagement?: LoadManagementState;
+  isNewUser?: boolean;
 }): {
   exercises: SuggestNextWorkoutResponse["exercises"];
   warnings: string[];
@@ -404,6 +498,8 @@ function buildExercisesFromStructureAndProgramming(input: {
 } {
   const warnings: string[] = [];
   const exerciseLoadDebug: NonNullable<SuggestNextWorkoutResponse["aiDebug"]>["exerciseLoadDebug"] = [];
+  const loadCtx = getAthleteLoadContext(input.payload);
+  const calibrationAvailable = strengthCalibrationHasAny(loadCtx.strengthCalibration);
   const byExercise = new Map<string, ParsedProgrammedExercise>();
   for (const p of input.programmed) {
     byExercise.set(p.exercise, p);
@@ -430,7 +526,7 @@ function buildExercisesFromStructureAndProgramming(input: {
     const repsParsed = p ? parseFirstInt(p.reps) : null;
     const loadParsed = p ? parseLoadReps(p.load) : undefined;
 
-    const defaults = buildDefaultWorkingSetsForExercise(s.exercise, input.payload);
+    const defaults = buildDefaultWorkingSetsForExercise(s.exercise, input.payload, { isNewUser: input.isNewUser });
     const programmedLoad = typeof loadParsed?.load === "number" && Number.isFinite(loadParsed.load)
       ? loadParsed.load
       : null;
@@ -443,35 +539,11 @@ function buildExercisesFromStructureAndProgramming(input: {
     const hasHistory = Boolean(
       baseline?.latestSets?.some((st) => (st.weight ?? 0) > 0 && (st.reps ?? 0) > 0),
     );
-    const athleteProfileLoose =
-      (input.payload.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ??
-      (input.payload.athleteProfile as Record<string, unknown> | undefined) ??
-      {};
-    const scRaw = athleteProfileLoose.strengthCalibration;
-    const sc =
-      scRaw && typeof scRaw === "object"
-        ? (scRaw as {
-            benchPress?: { weight: number; reps: number };
-            squatOrLegPress?: { weight: number; reps: number };
-            deadliftOrRdl?: { weight: number; reps: number };
-            latPulldownOrPullup?: { weight: number; reps: number };
-            shoulderPress?: { weight: number; reps: number };
-          })
-        : undefined;
-    const expRaw = athleteProfileLoose.experience;
-    const exp =
-      expRaw === "beginner" || expRaw === "intermediate" || expRaw === "advanced"
-        ? expRaw
-        : undefined;
-    const limitationsRaw = athleteProfileLoose.limitations;
-    const limitations = Array.isArray(limitationsRaw)
-      ? limitationsRaw.filter((x) => typeof x === "string")
-      : undefined;
     const calib = estimateBaselineWeightForExerciseFromCalibration({
       exerciseName: s.exercise,
-      calibration: sc,
-      experience: exp,
-      limitations,
+      calibration: loadCtx.strengthCalibration,
+      experience: loadCtx.experience,
+      limitations: loadCtx.limitations,
     });
     const calibrationWeight = calib?.weight ?? null;
     const calibrationMatch = Boolean(calib && calibrationWeight && calibrationWeight > 0);
@@ -483,8 +555,9 @@ function buildExercisesFromStructureAndProgramming(input: {
       programmedLoad > 0 &&
       programmedLoad <= 25;
 
-    const baseWeight =
-      !hasHistory && calibrationMatch && (programmedLoad == null || shouldOverrideGeneric)
+    const baseWeight = input.isNewUser
+      ? (calibrationWeight ?? defaults[0]?.weight ?? CALIBRATION_PLACEHOLDER_WEIGHT)
+      : !hasHistory && calibrationMatch && (programmedLoad == null || shouldOverrideGeneric)
         ? (calibrationWeight as number)
         : (programmedLoad ?? defaults[0]?.weight ?? 20);
     const baseReps = loadParsed?.reps ?? repsParsed ?? defaults[0]?.reps ?? 10;
@@ -509,12 +582,16 @@ function buildExercisesFromStructureAndProgramming(input: {
             : "High fatigue: avoid pushing intensity."
           : "";
 
-    const progNote =
+    const baseProgNote =
       p && p.progression
         ? `${p.progression}${p.restSeconds >= 0 ? `; rest ${p.restSeconds}s` : ""}${fatigueNote ? `; ${fatigueNote}` : ""}`
         : input.payload.language === "ru"
           ? "Программирование по каркасу; настрой нагрузку по журналу."
           : "Skeleton programming; match load to your log.";
+
+    const progNote = input.isNewUser
+      ? `${calibrationExerciseNote(input.payload.language)}${p && p.restSeconds >= 0 ? ` rest ${p.restSeconds}s` : ""}${fatigueNote ? `; ${fatigueNote}` : ""}`
+      : baseProgNote;
 
     const lmNote = !lmActive
       ? ""
@@ -533,13 +610,18 @@ function buildExercisesFromStructureAndProgramming(input: {
     });
 
     const source: NonNullable<NonNullable<SuggestNextWorkoutResponse["aiDebug"]>["exerciseLoadDebug"]>[number]["source"] =
-      hasHistory
-        ? "history"
-        : !hasHistory && calibrationMatch && (programmedLoad == null || shouldOverrideGeneric)
-          ? "calibration"
-          : programmedLoad != null
-            ? "llm"
-            : "fallback";
+      (() => {
+        if (hasHistory) return "history";
+        if (input.isNewUser) {
+          if (calibrationMatch && calibrationWeight != null) return "calibration";
+          return "calibration_rpe";
+        }
+        if (calibrationMatch && (programmedLoad == null || shouldOverrideGeneric)) {
+          return "calibration";
+        }
+        if (programmedLoad != null) return "llm";
+        return "fallback";
+      })();
 
     exerciseLoadDebug.push({
       exercise: s.exercise,
@@ -548,6 +630,9 @@ function buildExercisesFromStructureAndProgramming(input: {
       calibrationWeight,
       finalWeight,
       source,
+      calibrationAvailable,
+      calibrationEstimate: calibrationWeight ?? undefined,
+      calibrationMatched: source === "calibration",
     });
   }
 
@@ -580,7 +665,7 @@ function padExercisesToSkeleton(
     used.add(name);
     out.push({
       name,
-      sets: buildDefaultWorkingSetsForExercise(name, input),
+      sets: buildDefaultWorkingSetsForExercise(name, input, { isNewUser: isNewUserPayload(input) }),
       decision: "maintain",
       decision_label: input.language === "ru" ? "Стабильная нагрузка" : "Maintain",
       reason:
@@ -617,7 +702,8 @@ function applyFatigueBasedProgression(
   fatigue: FatigueSignal,
   lang: AiCoachRequestPayload["language"],
   strategyText: string,
-  musclesAtWeeklyVolumeMax: string[],
+  musclesAtWeeklyVolumeMax: PrimaryMuscleGroup[],
+  catalog: Exercise[],
 ): SuggestNextWorkoutResponse["exercises"] {
   const n = exercises.length;
   if (n === 0) return exercises;
@@ -647,17 +733,16 @@ function applyFatigueBasedProgression(
   const next = exercises.map((e) => ({ ...e, sets: e.sets.map((s) => ({ ...s })) }));
   let progressed = progressed0;
 
-  const blocked = new Set((musclesAtWeeklyVolumeMax ?? []).map((s) => String(s).toLowerCase()));
+  const lookup = buildCatalogLookup(catalog);
+  const blocked = new Set(musclesAtWeeklyVolumeMax ?? []);
 
   function priorityScore(name: string): number {
-    const s = name.toLowerCase();
-    const isolation =
-      /curl|pushdown|extension|fly|raise|lateral|rear delt|calf|crunch|plank|leg raise|pallof/.test(
-        s,
-      );
-    const cable = /cable|pulley/.test(s);
-    const machine = /machine|smith/.test(s);
-    // Higher is better.
+    const row = resolveCatalogRowByExerciseName(name, lookup);
+    if (!row) return 0;
+    const tags = row.equipmentTags;
+    const isolation = row.movementPattern === "isolation" || row.movementPattern === "core";
+    const cable = tags.includes("cable");
+    const machine = tags.includes("machine") || tags.includes("smith");
     return (isolation ? 300 : 0) + (cable ? 200 : 0) + (machine ? 100 : 0);
   }
 
@@ -671,13 +756,12 @@ function applyFatigueBasedProgression(
     if (ex.decision !== "maintain") continue;
     if (!ex.sets.length) continue;
 
-    // Do not add stress for muscles already at weekly volume max.
-    const b = muscleBucket(ex.name);
-    const blockedByVolume =
-      blocked.has(b) ||
-      (b === "arms" && (blocked.has("biceps") || blocked.has("triceps"))) ||
-      (b === "legs" && blocked.has("hamstrings"));
-    if (blockedByVolume) continue;
+    const row = resolveCatalogRowByExerciseName(ex.name, lookup);
+    const p = row?.primaryMuscle;
+    if (p) {
+      if (blocked.has(p)) continue;
+      if (p === "legs" && blocked.has("hamstrings")) continue;
+    }
 
     if (fatigue === "moderate") {
       // Moderate fatigue: reps-only progression.
@@ -704,6 +788,7 @@ function finalizeResponse(
   structure: ReturnType<typeof selectWorkoutStructure>,
   runtime: EngineRuntimeContext,
   loadManagement?: LoadManagementState,
+  flags?: { isNewUser?: boolean },
 ): SuggestNextWorkoutResponse {
   const training_signals0 = buildTrainingSignalsFromModelOrPayload(parsed, input);
   const training_signals: AiTrainingSignalsResponse = {
@@ -722,39 +807,55 @@ function finalizeResponse(
     programmed: parsed.programmedExercises,
     runtime,
     loadManagement,
+    isNewUser: flags?.isNewUser === true,
   });
 
   const splitLabel = normalizeSplitLabel(structure.split);
-  const exercisesSplitFiltered = filterExercisesBySplit(merged.exercises, splitLabel);
+  const exercisesSplitFiltered = filterExercisesBySplit(
+    merged.exercises,
+    splitLabel,
+    input.exerciseCatalog,
+  );
   const skel = toSkeletonSplit(splitLabel);
   const structureFix = skel
     ? repairWorkoutBySkeleton({
         exercises: exercisesSplitFiltered,
         split: skel,
         language: input.language,
-        buildDefaultSets: (name) => buildDefaultWorkingSetsForExercise(name, input),
+        buildDefaultSets: (name) =>
+          buildDefaultWorkingSetsForExercise(name, input, { isNewUser: flags?.isNewUser === true }),
       })
     : dedupeExercisesGeneric(
         exercisesSplitFiltered,
         input.language,
-        (name) => buildDefaultWorkingSetsForExercise(name, input),
+        (name) =>
+          buildDefaultWorkingSetsForExercise(name, input, { isNewUser: flags?.isNewUser === true }),
       );
   const autoFixWarnings = structureFix.warning ? [structureFix.warning] : [];
   const exercisesPadded = padExercisesToSkeleton(structureFix.exercises, splitLabel, input);
-  const exercises = applyFatigueBasedProgression(
+  const exercisesAfterFatigue = applyFatigueBasedProgression(
     exercisesPadded,
     training_signals.fatigue,
     input.language,
     training_signals.strategy,
     input.aiDecisionContext?.laggingMuscles?.laggingInterventionBlockers?.musclesAtWeeklyVolumeMax ??
       [],
+    input.exerciseCatalog,
   );
+  const guarded = applySuggestNextProgressionGuards(
+    exercisesAfterFatigue,
+    input,
+    runtime,
+    { isNewUser: flags?.isNewUser === true, maxExerciseReason: MAX_EXERCISE_REASON },
+  );
+  const exercises = guarded.exercises;
+  const guardWarnings = guarded.guardWarnings;
   // Insights are attached after finalize via generateWorkoutInsights (LLM + fallback).
   const insights: SuggestNextWorkoutResponse["insights"] = [];
   const confServer = computeConfidenceScore(input, exercises);
   const confidence = mergeConfidence(parsed.confidence, confServer);
   const warnings = (() => {
-    const w = [...autoFixWarnings, ...merged.warnings, ...parsed.warnings];
+    const w = [...autoFixWarnings, ...merged.warnings, ...parsed.warnings, ...guardWarnings];
     if (input.language !== "ru") return w;
     return w.map((s) => {
       const t = String(s ?? "").trim();
@@ -821,10 +922,14 @@ function finalizeResponse(
             : ("high" as const));
     return { muscle, status, sets };
   });
+  const globalReason = flags?.isNewUser
+    ? cap(calibrationGlobalNote(input.language), MAX_LINE)
+    : cap(parsed.reason, MAX_LINE);
+
   return {
     title: parsed.title,
     session_type: parsed.session_type,
-    reason: cap(parsed.reason, MAX_LINE),
+    reason: globalReason,
     confidence,
     training_signals,
     insights,
@@ -834,6 +939,7 @@ function finalizeResponse(
     volumeSummary,
     aiDebug: {
       exerciseLoadDebug: merged.exerciseLoadDebug ?? [],
+      ...(guardWarnings.length ? { progressionGuards: guardWarnings } : {}),
     },
   };
 }
@@ -1025,6 +1131,7 @@ function normalizeSuggestPayload(
       }
       return { ...EMPTY_PERIODIZATION };
     })(),
+    exerciseCatalog: Array.isArray(body.exerciseCatalog) ? body.exerciseCatalog : [],
     aiDecisionContext:
       body.aiDecisionContext && typeof body.aiDecisionContext === "object"
         ? (body.aiDecisionContext as AiCoachRequestPayload["aiDecisionContext"])
@@ -1092,6 +1199,7 @@ export async function enrichSuggestNextWorkoutInsights(
     workoutResult: result,
     aiDecisionContext: input.aiDecisionContext,
     language: input.language,
+    exerciseCatalog: input.exerciseCatalog,
     openaiClient: key ? createWorkoutInsightsOpenAIClient(key) : null,
   });
   return withSuggestNextDevDebug({ ...result, insights }, input, { source, warnings });
@@ -1127,9 +1235,12 @@ function buildSplitGuardFallbackSuggestion(
     QUICK_WORKOUT_TEMPLATES.find((x) => x.id === id) ??
     QUICK_WORKOUT_TEMPLATES.find((q) => q.id === "push")!;
   const last = g?.lastWorkoutSplit ?? "Unknown";
+  const isNew = isNewUserPayload(input);
+  const loadCtx = getAthleteLoadContext(input);
+  const calibrationAvailable = strengthCalibrationHasAny(loadCtx.strengthCalibration);
   const exercises: SuggestNextWorkoutResponse["exercises"] = [...t.exercises].map((name) => ({
     name,
-    sets: buildDefaultWorkingSetsForExercise(name, input),
+    sets: buildDefaultWorkingSetsForExercise(name, input, { isNewUser: isNew }),
     decision: "maintain",
     decision_label: DEFAULT_DECISION_LABEL.maintain,
     reason: cap(
@@ -1137,6 +1248,47 @@ function buildSplitGuardFallbackSuggestion(
       MAX_EXERCISE_REASON,
     ),
   }));
+  const exerciseLoadDebug: NonNullable<SuggestNextWorkoutResponse["aiDebug"]>["exerciseLoadDebug"] =
+    exercises.map((ex) => {
+      const name = ex.name;
+      const baseline = (input.trainingSignals?.exerciseBaselines ?? []).find(
+        (b) => normalizeExerciseName(b.name) === normalizeExerciseName(name),
+      );
+      const hasHistory = Boolean(
+        baseline?.latestSets?.some((st) => (st.weight ?? 0) > 0 && (st.reps ?? 0) > 0),
+      );
+      const calib = estimateBaselineWeightForExerciseFromCalibration({
+        exerciseName: name,
+        calibration: loadCtx.strengthCalibration,
+        experience: loadCtx.experience,
+        limitations: loadCtx.limitations,
+      });
+      const calibrationWeight = calib?.weight ?? null;
+      const calibrationMatch = Boolean(calib && calibrationWeight && calibrationWeight > 0);
+      const finalWeight = ex.sets[0]?.weight ?? 0;
+      const source: NonNullable<
+        NonNullable<SuggestNextWorkoutResponse["aiDebug"]>["exerciseLoadDebug"]
+      >[number]["source"] = hasHistory
+        ? "history"
+        : isNew
+          ? calibrationMatch && calibrationWeight != null
+            ? "calibration"
+            : "calibration_rpe"
+          : calibrationMatch
+            ? "calibration"
+            : "fallback";
+      return {
+        exercise: name,
+        programmedLoad: null,
+        calibrationMatch,
+        calibrationWeight,
+        finalWeight,
+        source,
+        calibrationAvailable,
+        calibrationEstimate: calibrationWeight ?? undefined,
+        calibrationMatched: source === "calibration",
+      };
+    });
 
   return {
     title: `${t.label} (split guard)`,
@@ -1157,6 +1309,9 @@ function buildSplitGuardFallbackSuggestion(
     warnings: [
       "Split continuity guard: the model repeated your last training split, so a template from your preferred alternatives was used. Adjust weights before training.",
     ],
+    aiDebug: {
+      exerciseLoadDebug,
+    },
   };
 }
 
@@ -1166,6 +1321,7 @@ function parseAndFinalize(
   structure: ReturnType<typeof selectWorkoutStructure>,
   runtime: EngineRuntimeContext,
   loadManagement?: LoadManagementState,
+  flags?: { isNewUser?: boolean },
 ) {
   let parsed: unknown;
   try {
@@ -1176,16 +1332,15 @@ function parseAndFinalize(
   }
   const loose = parseModelLoose(parsed);
   if (!loose) return null;
-  return finalizeResponse(loose, input, structure, runtime, loadManagement);
+  return finalizeResponse(loose, input, structure, runtime, loadManagement, flags);
 }
 
 function coachTemplateSuggestion(input: AiCoachRequestPayload): SuggestNextWorkoutResponse {
   const lang = input.language ?? "en";
   const ru = lang === "ru";
-  const profile =
-    (input.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ??
-    (input.athleteProfile as Record<string, unknown> | undefined) ??
-    {};
+  const profileTop = (input.athleteProfile as Record<string, unknown> | undefined) ?? {};
+  const profileCtx = (input.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ?? {};
+  const profile: Record<string, unknown> = { ...profileCtx, ...profileTop };
   const expRaw = profile.experience;
   const experience =
     expRaw === "beginner" || expRaw === "intermediate" || expRaw === "advanced"
@@ -1304,8 +1459,11 @@ function coachTemplateSuggestion(input: AiCoachRequestPayload): SuggestNextWorko
   }
 
   const fatigue = input.trainingSignals?.fatigueSignal ?? "unknown";
+  const isNew = isNewUserPayload(input);
+  const loadCtx = getAthleteLoadContext(input);
+  const calibrationAvailable = strengthCalibrationHasAny(loadCtx.strengthCalibration);
   const exercises: SuggestNextWorkoutResponse["exercises"] = names.map(({ name, slot }) => {
-    const defaults = buildDefaultWorkingSetsForExercise(name, input);
+    const defaults = buildDefaultWorkingSetsForExercise(name, input, { isNewUser: isNew });
     const w = defaults[0]?.weight ?? 20;
     const s = schemeFor(slot);
     const sets = Array.from({ length: s.sets }, () => ({ weight: w, reps: s.reps }));
@@ -1320,6 +1478,48 @@ function coachTemplateSuggestion(input: AiCoachRequestPayload): SuggestNextWorko
           : "Coach starter: structured session with safe rep ranges.",
     };
   });
+
+  const exerciseLoadDebug: NonNullable<SuggestNextWorkoutResponse["aiDebug"]>["exerciseLoadDebug"] =
+    exercises.map((ex) => {
+      const name = ex.name;
+      const baseline = (input.trainingSignals?.exerciseBaselines ?? []).find(
+        (b) => normalizeExerciseName(b.name) === normalizeExerciseName(name),
+      );
+      const hasHistory = Boolean(
+        baseline?.latestSets?.some((st) => (st.weight ?? 0) > 0 && (st.reps ?? 0) > 0),
+      );
+      const calib = estimateBaselineWeightForExerciseFromCalibration({
+        exerciseName: name,
+        calibration: loadCtx.strengthCalibration,
+        experience: loadCtx.experience,
+        limitations: loadCtx.limitations,
+      });
+      const calibrationWeight = calib?.weight ?? null;
+      const calibrationMatch = Boolean(calib && calibrationWeight && calibrationWeight > 0);
+      const finalWeight = ex.sets[0]?.weight ?? 0;
+      const source: NonNullable<
+        NonNullable<SuggestNextWorkoutResponse["aiDebug"]>["exerciseLoadDebug"]
+      >[number]["source"] = hasHistory
+        ? "history"
+        : isNew
+          ? calibrationMatch && calibrationWeight != null
+            ? "calibration"
+            : "calibration_rpe"
+          : calibrationMatch
+            ? "calibration"
+            : "fallback";
+      return {
+        exercise: name,
+        programmedLoad: null,
+        calibrationMatch,
+        calibrationWeight,
+        finalWeight,
+        source,
+        calibrationAvailable,
+        calibrationEstimate: calibrationWeight ?? undefined,
+        calibrationMatched: source === "calibration",
+      };
+    });
 
   const title = (() => {
     const f = focus === "strength" ? "Strength" : focus === "light" ? "Light" : "Hypertrophy";
@@ -1357,6 +1557,7 @@ function coachTemplateSuggestion(input: AiCoachRequestPayload): SuggestNextWorko
       coachModeProfileApplied: true,
       coachModeSource: "profile_starter",
       coachModeReason,
+      exerciseLoadDebug,
     },
   };
   return out;
@@ -1389,7 +1590,11 @@ export async function fetchSuggestNextWorkoutFromOpenAI(
     return enrichSuggestNextWorkoutInsights(coachTemplateSuggestion(input), input, apiKey);
   }
   const payload = normalizeSuggestPayload(input);
-  const runtime = await buildEngineRuntimeContextWithMemory(payload.aiDecisionContext);
+  const isNewUser = isNewUserPayload(payload);
+  const runtime = await buildEngineRuntimeContextWithMemory(
+    payload.aiDecisionContext,
+    payload.coachMemory,
+  );
   const adaptation = evaluateTrainingAdaptation(runtime);
   addTrace(runtime, {
     engine: "TrainingAdaptationEngine",
@@ -1413,50 +1618,12 @@ export async function fetchSuggestNextWorkoutFromOpenAI(
       `intensityMultiplier:${loadManagement.intensityMultiplier}`,
     ],
   });
-  // Build an exercise catalog for deterministic selection.
-  // Include: favorites, recent workout exercise names, and metadata starter list (for role coverage).
-  // Dedupe by normalized exercise name.
-  const rawCatalog = [
-    ...(payload.favorites ?? []).map((f) => ({
-      id: "",
-      name: f.name,
-      muscleGroup: f.muscleGroup,
-      equipment: f.equipment,
-      isFavorite: true,
-      createdAt: "",
-      updatedAt: "",
-    })),
-    ...((payload.aiDecisionContext?.recentWorkouts ?? [])
-      .flatMap((w) => w.exercises.map((e) => e.name))
-      .map((name) => ({
-        id: "",
-        name,
-        muscleGroup: undefined,
-        equipment: undefined,
-        createdAt: "",
-        updatedAt: "",
-      }))),
-    ...EXERCISE_METADATA_V1.map((m) => ({
-      id: "",
-      name: m.name,
-      muscleGroup: m.primaryMuscleGroup,
-      equipment: m.equipmentTags[0],
-      createdAt: "",
-      updatedAt: "",
-    })),
-  ];
-  const catalog = (() => {
-    const seen = new Set<string>();
-    const out: typeof rawCatalog = [];
-    for (const ex of rawCatalog) {
-      const k = normalizeExerciseName(ex.name);
-      if (!k) continue;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(ex);
-    }
-    return out;
-  })();
+  // Deterministic selection pool: prefer canonical Dexie catalog (stable ids), fallback to the old mixed source.
+  const candidateCatalog: Exercise[] =
+    Array.isArray(payload.exerciseCatalog) && payload.exerciseCatalog.length
+      ? dedupeExerciseCatalogByNormalizedName(payload.exerciseCatalog)
+      : buildLegacyMixedCatalog(payload);
+  const catalog: Exercise[] = candidateCatalog;
   const custom = buildCustomSelectedStructure(payload);
   const structure = custom
     ? custom.structure
@@ -1483,7 +1650,7 @@ ${JSON.stringify({
 
   const content1 = await openAiSuggestChat(apiKey, systemContent, user);
   if (!content1) return null;
-  const result1 = parseAndFinalize(content1, payload, structure, runtime, loadManagement);
+  const result1 = parseAndFinalize(content1, payload, structure, runtime, loadManagement, { isNewUser });
   if (!result1) return null;
   if (custom) {
     result1.warnings = [...(result1.warnings ?? []), custom.warning];
@@ -1534,7 +1701,7 @@ Return a complete NEW JSON object using the same schema. Rewrite title, exercise
   });
 
   if (content2) {
-    const result2 = parseAndFinalize(content2, payload, structure, runtime, loadManagement);
+    const result2 = parseAndFinalize(content2, payload, structure, runtime, loadManagement, { isNewUser });
     if (result2 && !responseViolatesSplitGuard(result2, payload)) {
       if (process.env.NODE_ENV === "development") {
         console.log("[ai-coach] split guard: second response accepted");

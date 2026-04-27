@@ -5,10 +5,14 @@ import { Play } from "lucide-react";
 import { findBaselineForExerciseName } from "@/lib/aiCoachResponseNormalize";
 import {
   buildWhyRowsFromTrainingSignalsResponse,
+  findExerciseLoadDebugRow,
+  formatLastTimeFromBaseline,
   formatLastToTodayLine,
+  loadSourceMessageKey,
 } from "@/lib/aiCoachDisplay";
-import { localizeDecisionLabel, translateStrategyValue } from "@/lib/aiCoachResultLabels";
+import { localizeDecisionLabel } from "@/lib/aiCoachResultLabels";
 import type { AiDecisionContext, ExerciseDecision, SuggestNextWorkoutAiExercise, SuggestNextWorkoutResponse } from "@/types/aiCoach";
+import type { Exercise } from "@/types/trainingDiary";
 import type { MessageKey } from "@/i18n/dictionary";
 import { useI18n } from "@/i18n/LocaleContext";
 import { Card } from "@/components/ui/Card";
@@ -116,6 +120,8 @@ function WhyCallout({
 type Props = {
   result: SuggestNextWorkoutResponse;
   decisionContext: AiDecisionContext | null;
+  /** Dexie catalog snapshot; used for dev quality-check (metadata-based). */
+  exerciseCatalog?: Exercise[];
   onStart: () => void;
   /** UI-only: compact/action-first rendering (e.g. Workout screen). */
   variant?: "full" | "compact";
@@ -137,14 +143,6 @@ function volumeChipLabel(v: string): "Low" | "Optimal" | "High" | "Unknown" {
   if (s.includes("flat") || s.includes("stable")) return "Optimal";
   if (s.includes("up")) return "High";
   return "Unknown";
-}
-
-function strategyChipLabel(strategyValue: string): "Maintain" | "Progress" | "Reduce" | "Deload" {
-  const s = strategyValue.toLowerCase();
-  if (s.includes("deload") || s.includes("recovery")) return "Deload";
-  if (s.includes("reduce")) return "Reduce";
-  if (s.includes("maintain") || s.includes("moderate")) return "Maintain";
-  return "Progress";
 }
 
 function localizeDecisionBadgeCompact(label: string, locale: string): string {
@@ -257,6 +255,84 @@ function computeComparableHistoryLineRu(
   if (prev.r === next.r) return null;
 
   return `Было: ${formatScheme(prev)}`;
+}
+
+function capCoachNote(s: string, max = 240): string {
+  const t = s.trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1).trimEnd()}…`;
+}
+
+/**
+ * Human-readable fatigue / volume trend / strategy (single place — avoids duplicating tag chips + card).
+ */
+function TrainingSignalsDetail({
+  trainingSignals,
+  locale,
+}: {
+  trainingSignals: SuggestNextWorkoutResponse["training_signals"];
+  locale: string;
+}) {
+  const isRu = locale === "ru";
+  const fatigueRaw = String(trainingSignals.fatigue ?? "unknown");
+  const volumeRaw = String(trainingSignals.volume_trend ?? "unknown");
+  const strategyRaw = String(trainingSignals.strategy ?? "—");
+
+  const fatigueRu =
+    fatigueRaw === "low"
+      ? "низкая"
+      : fatigueRaw === "moderate"
+        ? "умеренная"
+        : fatigueRaw === "high"
+          ? "высокая"
+          : fatigueRaw;
+
+  const volumeRu =
+    volumeRaw === "down"
+      ? "снижается"
+      : volumeRaw === "stable"
+        ? "стабильный"
+        : volumeRaw === "up"
+          ? "растёт"
+          : volumeRaw;
+
+  const s = strategyRaw.toLowerCase();
+  const strategyRu =
+    s.includes("maintain")
+      ? "Сохраняем текущий объём"
+      : s.includes("increase_reps")
+        ? "Постепенно увеличиваем повторения"
+        : s.includes("reduce_volume")
+          ? "Снижаем объём для восстановления"
+          : strategyRaw;
+
+  return (
+    <div className="mt-4 space-y-1.5 border-t border-neutral-800/80 pt-4 text-sm text-neutral-200/90">
+      <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+        {isRu ? "Состояние нагрузки" : "Load status"}
+      </p>
+      <div className="space-y-1.5">
+        <div className="flex items-start justify-between gap-3">
+          <span className="text-neutral-500">{isRu ? "Усталость" : "Fatigue"}</span>
+          <span className="text-right font-medium text-neutral-100">
+            {isRu ? fatigueRu : fatigueRaw}
+          </span>
+        </div>
+        <div className="flex items-start justify-between gap-3">
+          <span className="text-neutral-500">{isRu ? "Объём" : "Volume trend"}</span>
+          <span className="text-right font-medium text-neutral-100">
+            {isRu ? volumeRu : volumeRaw}
+          </span>
+        </div>
+        <div className="flex items-start justify-between gap-3">
+          <span className="text-neutral-500">{isRu ? "Стратегия" : "Strategy"}</span>
+          <span className="text-right font-medium text-neutral-100">
+            {isRu ? strategyRu : strategyRaw}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function reasonToBullets(text: string, max = 3): string[] {
@@ -388,34 +464,24 @@ function deriveInsightsFromDecisions(
 export function AiCoachSuggestionResult({
   result,
   decisionContext,
+  exerciseCatalog,
   onStart,
   variant = "full",
 }: Props) {
   const { t, locale } = useI18n();
   const rows = buildWhyRowsFromTrainingSignalsResponse(result.training_signals, t);
-  // Keep translation call in sync with other screens; UI is compact here.
   const split = (result.training_signals?.split ?? "").trim() || result.title.trim() || t("suggested_workout");
-  const strategyRow = rows.find((r) => r.kind === "strategy");
   const fatigueRow = rows.find((r) => r.kind === "fatigue");
   const volumeRow = rows.find((r) => r.kind === "volume");
   const fatigueChip = fatigueRow?.value ? fatigueChipLabel(fatigueRow.value) : "Unknown";
   const volumeChip = volumeRow?.value ? volumeChipLabel(volumeRow.value) : "Unknown";
-  const strategyChip = strategyRow?.value
-    ? strategyChipLabel(translateStrategyValue(strategyRow.value, t))
-    : "Maintain";
 
-  const exerciseDecisions = useMemo(
-    () =>
-      result.exercises.map((e) => ({
-        name: e.name,
-        decision: e.decision,
-        decision_label: e.decision_label,
-      })),
-    [result.exercises],
-  );
-  if (process.env.NODE_ENV === "development") {
-    console.log("AI exercise decisions:", exerciseDecisions);
-  }
+  const sessionTypeLine = (result.session_type ?? "").trim();
+  const confidencePct =
+    typeof result.confidence === "number" && Number.isFinite(result.confidence)
+      ? Math.max(0, Math.min(100, Math.round(result.confidence)))
+      : null;
+  const loadSignalsUnknown = fatigueChip === "Unknown" || volumeChip === "Unknown";
 
   const ui = useMemo(() => {
     const isRu = locale === "ru";
@@ -423,16 +489,6 @@ export function AiCoachSuggestionResult({
       isRu,
       recommendedWorkout: isRu ? "Сегодня тренируем" : "Today we train",
       exercisesWord: isRu ? "упр." : "exercises",
-      fatigue: isRu ? "Усталость" : "Fatigue",
-      volume: isRu ? "Объём" : "Volume",
-      strategy: isRu ? "Стратегия" : "Strategy",
-      unknown: isRu ? "неизвестно" : "Unknown",
-      fatigueVal: (v: typeof fatigueChip) =>
-        isRu ? (v === "Low" ? "низкая" : v === "Medium" ? "средняя" : v === "High" ? "высокая" : "неизвестно") : v,
-      volumeVal: (v: typeof volumeChip) =>
-        isRu ? (v === "Low" ? "низкий" : v === "Optimal" ? "оптимальный" : v === "High" ? "высокий" : "неизвестно") : v,
-      strategyVal: (v: typeof strategyChip) =>
-        isRu ? (v === "Maintain" ? "держать" : v === "Progress" ? "прогресс" : v === "Reduce" ? "снизить" : "делоад") : v,
       insightType: (k: string) => {
         if (!isRu) return k;
         if (k === "opportunity") return "возможность";
@@ -443,6 +499,10 @@ export function AiCoachSuggestionResult({
         return k;
       },
       startWorkout: isRu ? "Подготовить тренировку" : "Prepare workout",
+      confidenceLabel: isRu ? "Уверенность" : "Confidence",
+      calibrationMessage: isRu
+        ? "Калибровочная тренировка: подбери веса примерно под RPE 7. Так план нагрузки станет точнее."
+        : "This is your calibration workout. Adjust loads to about RPE 7 so we can plan your training more accurately.",
     };
   }, [locale]);
 
@@ -512,6 +572,17 @@ export function AiCoachSuggestionResult({
     return recoveryAllReadyOrUnknown && volumeAllLowWithZeroSets;
   }, [result.training_signals, result.recoverySummary, result.volumeSummary]);
 
+  const showCalibrationBanner = useMemo(
+    () => isBaselineMode || result.aiDebug?.strengthCalibrationUsed === true,
+    [isBaselineMode, result.aiDebug?.strengthCalibrationUsed],
+  );
+
+  const splitReasonLine = useMemo(() => {
+    const raw = result.aiDebug?.splitSelection?.reason?.trim();
+    if (raw) return raw;
+    return t("split_selection_reason_fallback");
+  }, [result.aiDebug?.splitSelection?.reason, t]);
+
   // Recovery moved out of the Workout recommendation card.
 
   return (
@@ -521,119 +592,71 @@ export function AiCoachSuggestionResult({
         <div className="absolute inset-0 bg-gradient-to-br from-violet-500/12 via-transparent to-transparent" />
         <div className="relative p-5">
           <p className="text-sm text-neutral-400">{ui.recommendedWorkout}</p>
-          <h2 className="mt-1 text-3xl font-semibold leading-tight tracking-tight text-neutral-50">
+          <h2 className="mt-1 text-2xl font-semibold leading-tight tracking-tight text-neutral-50 sm:text-3xl">
             {split}
           </h2>
-          <p className="mt-2 text-sm text-neutral-500">
+          {splitReasonLine ? (
+            <p className="mt-1.5 text-xs leading-relaxed text-neutral-500">
+              {splitReasonLine}
+            </p>
+          ) : null}
+          {sessionTypeLine ? (
+            <p className="mt-2 line-clamp-2 text-sm text-violet-200/85">{sessionTypeLine}</p>
+          ) : null}
+          {confidencePct != null ? (
+            <p className="mt-1.5 text-xs text-neutral-500">
+              {ui.confidenceLabel}{" "}
+              <span className="font-medium text-neutral-300/90">{confidencePct}%</span>
+            </p>
+          ) : null}
+          <p className="mt-3 text-sm text-neutral-500">
             {result.exercises.length} {ui.exercisesWord}
           </p>
-
-          <div className="mt-3">
-            {fatigueChip === "Unknown" || volumeChip === "Unknown" ? (
-              <div className="rounded-2xl border border-neutral-800 bg-neutral-950/40 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                  {locale === "ru" ? "Состояние нагрузки" : "Load status"}
+          {showCalibrationBanner && !loadSignalsUnknown ? (
+            <div
+              className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-3.5 py-2.5 text-sm leading-snug text-amber-50/95"
+              role="status"
+            >
+              {ui.calibrationMessage}
+            </div>
+          ) : null}
+          {loadSignalsUnknown ? (
+            <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-950/40 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                {locale === "ru" ? "Состояние нагрузки" : "Load status"}
+              </p>
+              <p className="mt-1 text-base font-semibold text-neutral-100">
+                {locale === "ru" ? "Базовая тренировка" : "Baseline session"}
+              </p>
+              <p className="mt-1 text-sm text-neutral-500">
+                {locale === "ru"
+                  ? "Собираем данные тренировок, чтобы персонализировать план."
+                  : "We are collecting training data to personalize your plan."}
+              </p>
+              {showCalibrationBanner ? (
+                <p className="mt-3 border-t border-neutral-800/80 pt-3 text-sm leading-snug text-neutral-300/90">
+                  {ui.calibrationMessage}
                 </p>
-                <p className="mt-1 text-base font-semibold text-neutral-100">
-                  {locale === "ru" ? "Базовая тренировка" : "Baseline session"}
-                </p>
-                <p className="mt-1 text-sm text-neutral-500">
-                  {locale === "ru"
-                    ? "Собираем данные тренировок, чтобы персонализировать план."
-                    : "We are collecting training data to personalize your plan."}
-                </p>
-              </div>
-            ) : (
-              <div className="flex flex-wrap items-center gap-2">
-                <Tag tone="neutral">
-                  {ui.fatigue}: {ui.fatigueVal(fatigueChip)}
-                </Tag>
-                <Tag tone="neutral">
-                  {ui.volume}: {ui.volumeVal(volumeChip)}
-                </Tag>
-                {strategyChip ? (
-                  <Tag tone="neutral">
-                    {ui.strategy}: {ui.strategyVal(strategyChip)}
-                  </Tag>
-                ) : null}
-              </div>
-            )}
-          </div>
+              ) : null}
+            </div>
+          ) : result.training_signals ? (
+            <TrainingSignalsDetail
+              trainingSignals={result.training_signals}
+              locale={locale}
+            />
+          ) : null}
         </div>
       </Card>
 
-      {/* Load / recovery status (compact) */}
-      {result.training_signals && !(fatigueChip === "Unknown" || volumeChip === "Unknown") ? (
-        <section className="space-y-2">
-          <SectionHeader
-            title={locale === "ru" ? "Состояние нагрузки" : "Load status"}
-          />
-          <Card className="!p-5">
-            {(() => {
-              const isRu = locale === "ru";
-              const fatigueRaw = String(result.training_signals.fatigue ?? "unknown");
-              const volumeRaw = String(result.training_signals.volume_trend ?? "unknown");
-              const strategyRaw = String(result.training_signals.strategy ?? "—");
-
-              const fatigueRu =
-                fatigueRaw === "low"
-                  ? "низкая"
-                  : fatigueRaw === "moderate"
-                    ? "умеренная"
-                    : fatigueRaw === "high"
-                      ? "высокая"
-                      : fatigueRaw;
-
-              const volumeRu =
-                volumeRaw === "down"
-                  ? "снижается"
-                  : volumeRaw === "stable"
-                    ? "стабильный"
-                    : volumeRaw === "up"
-                      ? "растёт"
-                      : volumeRaw;
-
-              const s = strategyRaw.toLowerCase();
-              const strategyRu =
-                s.includes("maintain")
-                  ? "Сохраняем текущий объём"
-                  : s.includes("increase_reps")
-                    ? "Постепенно увеличиваем повторения"
-                    : s.includes("reduce_volume")
-                      ? "Снижаем объём для восстановления"
-                      : strategyRaw;
-
-              return (
-            <div className="space-y-1.5 text-sm text-neutral-200/90">
-              <div className="flex items-start justify-between gap-3">
-                <span className="text-neutral-500">
-                  {locale === "ru" ? "Усталость" : "Fatigue"}
-                </span>
-                <span className="text-right font-medium text-neutral-100">
-                  {isRu ? fatigueRu : fatigueRaw}
-                </span>
-              </div>
-              <div className="flex items-start justify-between gap-3">
-                <span className="text-neutral-500">
-                  {locale === "ru" ? "Объём" : "Volume"}
-                </span>
-                <span className="text-right font-medium text-neutral-100">
-                  {isRu ? volumeRu : volumeRaw}
-                </span>
-              </div>
-              <div className="flex items-start justify-between gap-3">
-                <span className="text-neutral-500">
-                  {locale === "ru" ? "Стратегия" : "Strategy"}
-                </span>
-                <span className="text-right font-medium text-neutral-100">
-                  {isRu ? strategyRu : strategyRaw}
-                </span>
-              </div>
-            </div>
-              );
-            })()}
-          </Card>
-        </section>
+      {result.exercises.length > 0 ? (
+        <button
+          type="button"
+          onClick={onStart}
+          className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-purple-600 px-4 py-3.5 text-base font-semibold text-white shadow-lg shadow-purple-950/30 ring-1 ring-inset ring-white/10 transition hover:bg-purple-500 active:opacity-90"
+        >
+          <Play className="h-5 w-5 shrink-0" aria-hidden />
+          {ui.startWorkout}
+        </button>
       ) : null}
 
       {/* Recovery summary (user-facing) */}
@@ -895,10 +918,19 @@ export function AiCoachSuggestionResult({
         />
         <div className="space-y-3">
           {result.exercises.map((ex, i) => {
-            const baseline = findBaselineForExerciseName(
-              decisionContext?.fatigueSignals ?? null,
+            const fatigue = decisionContext?.fatigueSignals ?? null;
+            const hasExerciseBaselines =
+              (fatigue?.exerciseBaselines?.length ?? 0) > 0;
+            const baseline = findBaselineForExerciseName(fatigue, ex.name);
+            const lastTimeLine =
+              hasExerciseBaselines && baseline
+                ? formatLastTimeFromBaseline(baseline, ex, t)
+                : null;
+            const loadDebug = findExerciseLoadDebugRow(
+              result.aiDebug?.exerciseLoadDebug,
               ex.name,
             );
+            const loadSourceLine = loadDebug ? t(loadSourceMessageKey(loadDebug.source)) : null;
             const prevLine = formatLastToTodayLine(ex, baseline, t);
             const fallbackBadge =
               locale === "ru"
@@ -920,6 +952,7 @@ export function AiCoachSuggestionResult({
               scheme && variant === "compact"
                 ? buildAutoProgressionHint({ ex, scheme, locale })
                 : null;
+            const reasonNote = ex.reason?.trim() ? capCoachNote(ex.reason) : null;
             return (
               <ExerciseCard
                 key={`${ex.name}-${i}`}
@@ -948,6 +981,9 @@ export function AiCoachSuggestionResult({
                     </span>
                   ) : undefined
                 }
+                coachNote={reasonNote ?? undefined}
+                lastTimeLine={lastTimeLine ?? undefined}
+                loadSourceLine={loadSourceLine ?? undefined}
                 progress={
                   showPrev ? (
                     <span className="text-neutral-500">
@@ -990,7 +1026,11 @@ export function AiCoachSuggestionResult({
 
       {/* 6) AI DEBUG (collapsible, hidden by default) */}
       {process.env.NODE_ENV === "development" && result.aiDebug ? (
-        <AiDebugPanel result={result} decisionContext={decisionContext} />
+        <AiDebugPanel
+          result={result}
+          decisionContext={decisionContext}
+          exerciseCatalog={exerciseCatalog}
+        />
       ) : null}
 
       {/* Warnings */}
@@ -1005,17 +1045,6 @@ export function AiCoachSuggestionResult({
         </div>
       ) : null}
 
-      {/* CTA moved into the recommendation card for compact action focus */}
-      {variant === "compact" && result.exercises.length > 0 ? (
-        <button
-          type="button"
-          onClick={onStart}
-          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl bg-purple-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-purple-500 active:opacity-90"
-        >
-          <Play className="h-5 w-5" aria-hidden />
-          {ui.startWorkout}
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -1023,9 +1052,11 @@ export function AiCoachSuggestionResult({
 function AiDebugPanel({
   result,
   decisionContext,
+  exerciseCatalog,
 }: {
   result: SuggestNextWorkoutResponse;
   decisionContext: AiDecisionContext | null;
+  exerciseCatalog?: Exercise[];
 }) {
   const [open, setOpen] = useState(false);
   const dbg = result.aiDebug!;
@@ -1051,12 +1082,12 @@ function AiDebugPanel({
     return group;
   }, [trace]);
   const qc = useMemo(
-    () => validateAiCoachSuggestion(result, decisionContext),
-    [result, decisionContext],
+    () => validateAiCoachSuggestion(result, decisionContext, exerciseCatalog),
+    [result, decisionContext, exerciseCatalog],
   );
   return (
     <section
-      className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900"
+      className="mt-8 overflow-hidden rounded-2xl border border-dashed border-neutral-700/50 bg-neutral-950/40"
       data-testid="ai-coach-debug"
     >
       <button

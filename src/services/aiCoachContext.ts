@@ -1,12 +1,20 @@
 import { getOrCreateAthleteProfile } from "@/db/athleteProfile";
 import { listExercises } from "@/db/exercises";
 import { getOrCreateSettings } from "@/db/settings";
+import {
+  buildCoachMemoryContextFromDexie,
+  ensureCoachMemoryMigratedFromLocalStorage,
+} from "@/db/coachMemory";
 import { parseAppLanguage } from "@/i18n/language";
 import { listWorkoutSessions } from "@/db/workoutSessions";
 import { getWorkoutChronologyTime } from "@/lib/workoutChronology";
 import { serializeAthleteProfileForAi } from "@/lib/serializeAthleteForAi";
 import { normalizeExerciseName } from "@/lib/exerciseName";
 import { QUICK_WORKOUT_TEMPLATES } from "@/lib/workoutQuickTemplates";
+import {
+  buildCatalogLookup,
+  resolveWorkoutExerciseToCatalogExercise,
+} from "@/services/exerciseCatalogResolve";
 import {
   buildAiTrainingContext,
   computeTrainingSignals,
@@ -19,15 +27,19 @@ import type {
   AiCoachRequestPayload,
   SerializableWorkoutForAi,
 } from "@/types/aiCoach";
-import type { WorkoutSession } from "@/types/trainingDiary";
+import type { Exercise, WorkoutSession } from "@/types/trainingDiary";
 
 const MAX_SESSIONS = 5;
 const MAX_STAT_NAMES = 24;
 const MAX_RECENT_NAMES = 20;
+const COACH_MEMORY_LIMIT_PER_EXERCISE = 6;
+const MAX_COACH_MEMORY_EXERCISES = 30;
 
 export function serializeWorkoutForAi(
   s: WorkoutSession,
+  catalog: Exercise[],
 ): SerializableWorkoutForAi {
+  const lookup = buildCatalogLookup(catalog);
   return {
     id: s.id,
     date: s.date,
@@ -37,14 +49,19 @@ export function serializeWorkoutForAi(
     durationMin: s.durationMin,
     totalSets: s.totalSets,
     totalVolume: s.totalVolume,
-    exercises: s.exercises.map((ex) => ({
-      name: ex.name,
-      sets: ex.sets.map((st) => ({
+    exercises: s.exercises.map((ex) => {
+      const row = resolveWorkoutExerciseToCatalogExercise(ex, lookup);
+      const sets = ex.sets.map((st) => ({
         weight: st.weight,
         reps: st.reps,
         volume: st.volume,
-      })),
-    })),
+      }));
+      const withId = ex.exerciseId ? { exerciseId: ex.exerciseId } : {};
+      if (row) {
+        return { name: ex.name, ...withId, primaryMuscle: row.primaryMuscle, sets };
+      }
+      return { name: ex.name, ...withId, unknownExercise: true, sets };
+    }),
   };
 }
 
@@ -136,6 +153,25 @@ function buildMostRecentExercises(sessions: WorkoutSession[]): string[] {
   return out;
 }
 
+function buildRelevantCoachMemoryExercises(
+  sessions: WorkoutSession[],
+): Array<{ exerciseId?: string; name: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ exerciseId?: string; name: string }> = [];
+  for (const s of sessions) {
+    for (const ex of s.exercises) {
+      const name = ex.name?.trim();
+      if (!name) continue;
+      const k = normalizeExerciseName(name);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push({ exerciseId: ex.exerciseId, name });
+      if (out.length >= MAX_COACH_MEMORY_EXERCISES) return out;
+    }
+  }
+  return out;
+}
+
 export type BuildAiCoachRequestOptions = {
   /** Default: history_based */
   aiMode?: AiCoachMode;
@@ -176,7 +212,7 @@ export async function buildAiCoachRequestPayload(
 
   const recentSessions = sortedSessions
     .slice(0, MAX_SESSIONS)
-    .map(serializeWorkoutForAi);
+    .map((s) => serializeWorkoutForAi(s, catalog));
 
   const logTotals = sortedSessions.reduce(
     (acc, s) => {
@@ -221,6 +257,19 @@ export async function buildAiCoachRequestPayload(
     snapshot,
   });
 
+  let coachMemory: import("@/services/aiCoachMemory").CoachMemoryContext | undefined;
+  try {
+    await ensureCoachMemoryMigratedFromLocalStorage();
+    const relevantExercises = buildRelevantCoachMemoryExercises(sessionSlice);
+    coachMemory = await buildCoachMemoryContextFromDexie({
+      exercises: relevantExercises,
+      limitPerExercise: COACH_MEMORY_LIMIT_PER_EXERCISE,
+    });
+  } catch {
+    // Best-effort only: never break suggest-next.
+    coachMemory = { exerciseMemories: {} };
+  }
+
   return {
     language: parseAppLanguage(settings.language),
     aiMode,
@@ -230,6 +279,8 @@ export async function buildAiCoachRequestPayload(
     mostRecentExercises,
     exerciseStats,
     favorites,
+    // Canonical catalog for deterministic engine selection (stable Dexie ids).
+    exerciseCatalog: catalog,
     settings: {
       defaultRestSec: settings.defaultRestSec,
       planningStyle: settings.planningStyle,
@@ -251,5 +302,6 @@ export async function buildAiCoachRequestPayload(
     periodization: aiDecisionContext.periodizationState,
     aiDecisionContext,
     quickTemplates,
+    coachMemory,
   };
 }

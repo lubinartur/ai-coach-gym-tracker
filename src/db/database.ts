@@ -10,6 +10,9 @@ import type { WorkoutTemplate } from "@/types/training";
 import { SEED_WORKOUT_TEMPLATES } from "./workoutTemplateSeeds";
 import type { Exercise, WorkoutSession } from "@/types/trainingDiary";
 import { EXERCISE_LIBRARY } from "@/data/exerciseLibrary";
+import { normalizeExerciseName } from "@/lib/exerciseName";
+import type { CoachMemoryRow } from "@/db/coachMemory";
+import type { AiDecisionTraceRow } from "@/db/aiDecisionTrace";
 
 export const SETTINGS_SINGLE_ID = "default" as const;
 
@@ -24,6 +27,8 @@ export class LifeExecutionDB extends Dexie {
   workoutTemplates!: Table<WorkoutTemplate>;
   exercises!: Table<Exercise>;
   workoutSessions!: Table<WorkoutSession>;
+  coachMemory!: Table<CoachMemoryRow>;
+  aiDecisionTraces!: Table<AiDecisionTraceRow>;
 
   constructor() {
     super("lifeExecutionPanel");
@@ -155,9 +160,20 @@ export class LifeExecutionDB extends Dexie {
             EXERCISE_LIBRARY.map((e) => ({
               id: createId(),
               name: e.name,
+              normalizedName:
+                normalizeExerciseName(e.name) ||
+                String(e.name ?? "").trim().toLowerCase() ||
+                createId(),
+              primaryMuscle: "other",
+              equipmentTags: e.equipment ? [e.equipment as unknown as never] : [],
+              movementPattern: "unknown",
+              roleCompatibility: [],
+              contraindications: [],
+              substitutions: [],
               muscleGroup: e.muscleGroup,
               equipment: e.equipment,
               source: "library" as const,
+              isFavorite: false,
               createdAt: now,
               updatedAt: now,
             })),
@@ -196,6 +212,84 @@ export class LifeExecutionDB extends Dexie {
           await t.put({ ...row, language: "en" });
         }
       });
+
+    // Phase 1 — Unify Exercise Catalog (canonical required fields + normalizedName index)
+    this.version(8)
+      .stores({
+        dailyPlans: "id, date, createdAt",
+        actions: "id, planId, date, type, status, order",
+        actionLogs: "id, actionId, date, createdAt",
+        userSettings: "id",
+        athleteProfiles: "id",
+        workoutTemplates: "id, dayType, name",
+        exercises:
+          "id, normalizedName, name, muscleGroup, equipment, createdAt, updatedAt",
+        workoutSessions: "id, date, createdAt, updatedAt",
+      })
+      .upgrade(async (tx) => {
+        const exerciseTable = tx.table<Exercise, string>("exercises");
+        const rows = await exerciseTable.toArray();
+        const now = new Date().toISOString();
+
+        for (const ex of rows) {
+          const normalizedName =
+            ex.normalizedName?.trim() ||
+            normalizeExerciseName(ex.name) ||
+            String(ex.name ?? "").trim().toLowerCase() ||
+            String(ex.id ?? "").trim() ||
+            "exercise";
+
+          await exerciseTable.update(ex.id, {
+            normalizedName,
+            primaryMuscle: ex.primaryMuscle ?? "other",
+            equipmentTags: Array.isArray(ex.equipmentTags) ? ex.equipmentTags : [],
+            movementPattern: ex.movementPattern ?? "unknown",
+            roleCompatibility: Array.isArray(ex.roleCompatibility)
+              ? ex.roleCompatibility
+              : [],
+            contraindications: Array.isArray(ex.contraindications)
+              ? ex.contraindications
+              : [],
+            substitutions: Array.isArray(ex.substitutions) ? ex.substitutions : [],
+            source: ex.source ?? "library",
+            isFavorite: ex.isFavorite ?? false,
+            // Do not clobber timestamps; only ensure updatedAt exists.
+            updatedAt: ex.updatedAt?.trim() ? ex.updatedAt : now,
+            createdAt: ex.createdAt?.trim() ? ex.createdAt : now,
+          } as Exercise);
+        }
+      });
+
+    // Phase 1 — Task 2: Durable AI Memory in Dexie (coachMemory table)
+    this.version(9).stores({
+      dailyPlans: "id, date, createdAt",
+      actions: "id, planId, date, type, status, order",
+      actionLogs: "id, actionId, date, createdAt",
+      userSettings: "id",
+      athleteProfiles: "id",
+      workoutTemplates: "id, dayType, name",
+      exercises:
+        "id, normalizedName, name, muscleGroup, equipment, createdAt, updatedAt",
+      workoutSessions: "id, date, createdAt, updatedAt",
+      coachMemory:
+        "id, createdAt, sessionId, exerciseId, normalizedExerciseName, [exerciseId+createdAt], [normalizedExerciseName+createdAt], [sessionId+createdAt]",
+    });
+
+    // Phase 1 — Improve Decision Trace Logging (persist minimal AI debug traces)
+    this.version(10).stores({
+      dailyPlans: "id, date, createdAt",
+      actions: "id, planId, date, type, status, order",
+      actionLogs: "id, actionId, date, createdAt",
+      userSettings: "id",
+      athleteProfiles: "id",
+      workoutTemplates: "id, dayType, name",
+      exercises:
+        "id, normalizedName, name, muscleGroup, equipment, createdAt, updatedAt",
+      workoutSessions: "id, date, createdAt, updatedAt",
+      coachMemory:
+        "id, createdAt, sessionId, exerciseId, normalizedExerciseName, [exerciseId+createdAt], [normalizedExerciseName+createdAt], [sessionId+createdAt]",
+      aiDecisionTraces: "id, createdAt, mode, generationSource",
+    });
   }
 }
 

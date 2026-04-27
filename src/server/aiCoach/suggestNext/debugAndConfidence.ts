@@ -1,3 +1,4 @@
+import { getStrengthCalibrationFromPayload } from "@/lib/aiCoachStrengthCalibrationResolve";
 import { normalizeExerciseName } from "@/lib/exerciseName";
 import { estimateBaselineWeightForExerciseFromCalibration } from "@/lib/strengthCalibration";
 import type {
@@ -84,29 +85,21 @@ export function withSuggestNextDevDebug(
 ): SuggestNextWorkoutResponse {
   const base = buildSuggestNextAiDebug(input);
 
-  const athleteProfileLoose =
-    (input.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ??
-    (input.athleteProfile as Record<string, unknown> | undefined) ??
-    {};
-  const scRaw = athleteProfileLoose.strengthCalibration;
-  const sc =
-    scRaw && typeof scRaw === "object"
-      ? (scRaw as {
-          benchPress?: { weight: number; reps: number };
-          squatOrLegPress?: { weight: number; reps: number };
-          deadliftOrRdl?: { weight: number; reps: number };
-          latPulldownOrPullup?: { weight: number; reps: number };
-          shoulderPress?: { weight: number; reps: number };
-        })
-      : undefined;
-  const expRaw = athleteProfileLoose.experience;
+  const top = (input.athleteProfile as Record<string, unknown> | undefined) ?? {};
+  const ctx = (input.aiDecisionContext?.athleteProfile as Record<string, unknown> | undefined) ?? {};
+  const sc = getStrengthCalibrationFromPayload(input);
+  const expTop = top.experience;
+  const expCtx = ctx.experience;
   const exp =
-    expRaw === "beginner" || expRaw === "intermediate" || expRaw === "advanced"
-      ? expRaw
-      : undefined;
-  const limitationsRaw = athleteProfileLoose.limitations;
-  const limitations = Array.isArray(limitationsRaw)
-    ? limitationsRaw.filter((x) => typeof x === "string")
+    expTop === "beginner" || expTop === "intermediate" || expTop === "advanced"
+      ? expTop
+      : expCtx === "beginner" || expCtx === "intermediate" || expCtx === "advanced"
+        ? expCtx
+        : undefined;
+  const limA = Array.isArray(top.limitations) ? top.limitations : undefined;
+  const limB = Array.isArray(ctx.limitations) ? ctx.limitations : undefined;
+  const limitations = (limA ?? limB)
+    ? (limA ?? limB)!.filter((x) => typeof x === "string")
     : undefined;
   const calibratedExercises = (r.exercises ?? [])
     .map((ex) => {

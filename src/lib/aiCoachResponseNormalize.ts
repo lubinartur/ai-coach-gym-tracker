@@ -368,11 +368,22 @@ export function normalizeSuggestNextResponseClient(
                     const row = x as Record<string, unknown>;
                     const source =
                       row.source === "calibration" ||
+                      row.source === "calibration_rpe" ||
                       row.source === "llm" ||
                       row.source === "history" ||
                       row.source === "fallback"
-                        ? (row.source as "calibration" | "llm" | "history" | "fallback")
+                        ? (row.source as "calibration" | "calibration_rpe" | "llm" | "history" | "fallback")
                         : "fallback";
+                    const calibW =
+                      typeof row.calibrationWeight === "number" && Number.isFinite(row.calibrationWeight)
+                        ? row.calibrationWeight
+                        : null;
+                    const calibEst =
+                      row.calibrationEstimate === null || row.calibrationEstimate === undefined
+                        ? calibW
+                        : typeof row.calibrationEstimate === "number" && Number.isFinite(row.calibrationEstimate)
+                          ? row.calibrationEstimate
+                          : null;
                     return {
                       exercise: typeof row.exercise === "string" ? row.exercise : "",
                       programmedLoad:
@@ -380,15 +391,21 @@ export function normalizeSuggestNextResponseClient(
                           ? row.programmedLoad
                           : null,
                       calibrationMatch: row.calibrationMatch === true,
-                      calibrationWeight:
-                        typeof row.calibrationWeight === "number" && Number.isFinite(row.calibrationWeight)
-                          ? row.calibrationWeight
-                          : null,
+                      calibrationWeight: calibW,
                       finalWeight:
                         typeof row.finalWeight === "number" && Number.isFinite(row.finalWeight)
                           ? row.finalWeight
                           : 0,
                       source,
+                      calibrationAvailable:
+                        typeof row.calibrationAvailable === "boolean"
+                          ? row.calibrationAvailable
+                          : undefined,
+                      calibrationEstimate: calibEst ?? undefined,
+                      calibrationMatched:
+                        typeof row.calibrationMatched === "boolean"
+                          ? row.calibrationMatched
+                          : undefined,
                     };
                   })
                   .filter((x) => x.exercise && x.finalWeight >= 0)

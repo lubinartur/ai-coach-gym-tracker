@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import { evaluateRecoveryState } from "@/services/recoveryEngine";
 import type { AiDecisionContext } from "@/types/aiCoach";
 
@@ -9,7 +10,12 @@ function decision(input: {
     performedAt?: string;
     createdAt?: string;
     date?: string;
-    exercises: { name: string; sets: { weight: number; reps: number; volume: number }[] }[];
+    exercises: {
+      name: string;
+      primaryMuscle?: PrimaryMuscleGroup;
+      unknownExercise?: boolean;
+      sets: { weight: number; reps: number; volume: number }[];
+    }[];
     totalSets: number;
     totalVolume: number;
     id: string;
@@ -54,7 +60,7 @@ describe("RecoveryEngine.evaluateRecoveryState", () => {
             date: "2026-04-26",
             totalSets: 10,
             totalVolume: 1000,
-            exercises: [{ name: "Bench Press", sets: [] }],
+            exercises: [{ name: "Bench Press", primaryMuscle: "chest", sets: [] }],
           },
         ],
         muscleRecovery: [{ muscleGroup: "chest", recoveryScore: 25 }],
@@ -81,7 +87,7 @@ describe("RecoveryEngine.evaluateRecoveryState", () => {
             date: "2026-04-24",
             totalSets: 12,
             totalVolume: 1200,
-            exercises: [{ name: "Back Squat", sets: [] }],
+            exercises: [{ name: "Back Squat", primaryMuscle: "legs", sets: [] }],
           },
         ],
         muscleRecovery: [{ muscleGroup: "legs", recoveryScore: 30 }],
@@ -107,7 +113,7 @@ describe("RecoveryEngine.evaluateRecoveryState", () => {
             date: "2026-04-23",
             totalSets: 10,
             totalVolume: 900,
-            exercises: [{ name: "Barbell Row", sets: [] }],
+            exercises: [{ name: "Barbell Row", primaryMuscle: "back", sets: [] }],
           },
         ],
         muscleRecovery: [{ muscleGroup: "back", recoveryScore: 30 }],
@@ -134,8 +140,8 @@ describe("RecoveryEngine.evaluateRecoveryState", () => {
             totalSets: 12,
             totalVolume: 800,
             exercises: [
-              { name: "Barbell Curl", sets: [] },
-              { name: "Bench Press", sets: [] },
+              { name: "Barbell Curl", primaryMuscle: "biceps", sets: [] },
+              { name: "Bench Press", primaryMuscle: "chest", sets: [] },
             ],
           },
         ],

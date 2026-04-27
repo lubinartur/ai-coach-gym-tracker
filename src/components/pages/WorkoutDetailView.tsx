@@ -13,6 +13,9 @@ import {
   setWorkoutSessionAiReview,
 } from "@/db/workoutSessions";
 import { buildWorkoutReviewRequestPayload } from "@/services/workoutReviewContext";
+import { inferCoachMemoryFromNote } from "@/services/aiCoachMemoryInference";
+import { addCoachMemoryEntries } from "@/db/coachMemory";
+import { normalizeExerciseName } from "@/services/exerciseStats";
 import type { WorkoutAiReview } from "@/types/aiCoach";
 import type { WorkoutSession } from "@/types/trainingDiary";
 import { Button } from "@/components/ui/Button";
@@ -126,6 +129,46 @@ export function WorkoutDetailView({ id }: { id: string }) {
       setSession((prev) =>
         prev && prev.id === id ? { ...prev, aiReview: review } : prev,
       );
+
+      // Best-effort durable coach memory write (client-side Dexie).
+      try {
+        const sessionId = payload.completedSession?.id;
+        if (sessionId && Array.isArray(review.exercise_notes)) {
+          const byNorm = new Map<string, string>();
+          for (const ex of session.exercises ?? []) {
+            const k = normalizeExerciseName(ex.name);
+            if (k && ex.exerciseId && !byNorm.has(k)) byNorm.set(k, ex.exerciseId);
+          }
+          const entries = review.exercise_notes
+            .map((row) => {
+              const exerciseName = row?.name?.trim();
+              const note = row?.note?.trim();
+              if (!exerciseName || !note) return null;
+              const inferred = inferCoachMemoryFromNote(note);
+              if (!inferred) return null;
+              const k = normalizeExerciseName(exerciseName) ?? "";
+              const exerciseId = k ? byNorm.get(k) : undefined;
+              return {
+                createdAt: Date.now(),
+                sessionId,
+                exerciseId,
+                exerciseName,
+                normalizedExerciseName: k || normalizeExerciseName(exerciseName) || exerciseName.toLowerCase(),
+                observation: inferred.observation,
+                decision: inferred.decision,
+                confidence: inferred.confidence,
+                source: "review_inferred" as const,
+                schemaVersion: 1 as const,
+              };
+            })
+            .filter((x): x is NonNullable<typeof x> => Boolean(x));
+          if (entries.length) {
+            await addCoachMemoryEntries(entries);
+          }
+        }
+      } catch {
+        // ignore
+      }
     } catch {
       setRegenerateReviewError(t("review_error"));
     } finally {

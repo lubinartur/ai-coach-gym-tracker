@@ -87,7 +87,7 @@ export async function buildAiCoachDecisionContext(
   // Deleted workouts are not included by `listWorkoutSessions()` (Dexie query only returns persisted rows).
   const recentWorkouts = sortedSessions
     .slice(0, MAX_RECENT_WORKOUTS)
-    .map(serializeWorkoutForAi);
+    .map((s) => serializeWorkoutForAi(s, catalog));
 
   // 1.5) split continuity guard (based on most recent completed session)
   const mostRecent = sortedSessions[0];

@@ -1,5 +1,4 @@
 import { PRIMARY_MUSCLE_GROUPS, type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
-import { getExerciseMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import type { AiDecisionContext } from "@/types/aiCoach";
 
 export type RecoveryMuscleState = {
@@ -115,7 +114,9 @@ export function evaluateRecoveryState(context: AiDecisionContext): RecoveryState
     const iso = parseWorkoutTimestampIso(w);
     if (!iso) continue;
     for (const ex of w.exercises ?? []) {
-      const m = getExerciseMuscleGroup(ex.name);
+      if (ex.unknownExercise) continue;
+      const m = ex.primaryMuscle;
+      if (!m) continue;
       if (!lastTrainedAtByMuscle.has(m)) {
         lastTrainedAtByMuscle.set(m, iso);
       }

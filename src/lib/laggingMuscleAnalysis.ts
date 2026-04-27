@@ -1,4 +1,4 @@
-import { getExerciseMuscleGroup, PRIMARY_MUSCLE_GROUPS, type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import { PRIMARY_MUSCLE_GROUPS, type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import { normalizeExerciseName } from "@/lib/exerciseName";
 import { getCalendarDateInTimezone } from "@/lib/dates";
 import {
@@ -43,7 +43,7 @@ function primaryMuscleForProgressionEntry(
     const ex = s.exercises.find((e) => normalizeExerciseName(e.name) === key);
     if (ex) return resolvePrimaryMuscle(ex, lookup);
   }
-  return getExerciseMuscleGroup(name);
+  return "other";
 }
 
 function lastTopSet(

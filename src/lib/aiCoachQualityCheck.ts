@@ -1,7 +1,37 @@
-import { muscleBucket, normalizeSplitLabel } from "@/lib/aiCoach/splitLabels";
+import { normalizeSplitLabel, type MuscleBucket } from "@/lib/aiCoach/splitLabels";
 import type { AiDecisionContext, SuggestNextWorkoutResponse } from "@/types/aiCoach";
+import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import type { Exercise } from "@/types/trainingDiary";
+import {
+  buildCatalogLookup,
+  resolveCatalogRowByExerciseName,
+} from "@/services/exerciseCatalogResolve";
 
 type Result = { passed: boolean; warnings: string[] };
+
+function primaryMuscleToProgressBucket(
+  m: PrimaryMuscleGroup,
+): MuscleBucket | "other" {
+  switch (m) {
+    case "chest":
+      return "chest";
+    case "back":
+      return "back";
+    case "shoulders":
+      return "shoulders";
+    case "legs":
+    case "hamstrings":
+      return "legs";
+    case "biceps":
+    case "triceps":
+    case "forearms":
+      return "arms";
+    case "calves":
+      return "calves";
+    default:
+      return "other";
+  }
+}
 
 function isProbablyRu(result: SuggestNextWorkoutResponse): boolean {
   const hay = `${result.title}\n${result.reason}\n${result.exercises
@@ -10,7 +40,10 @@ function isProbablyRu(result: SuggestNextWorkoutResponse): boolean {
   return /[А-Яа-яЁё]/.test(hay);
 }
 
-function insightMentionsIncrease(ins: { title: string; text: string }): { muscle: ReturnType<typeof muscleBucket> | null } {
+function insightMentionsIncrease(ins: {
+  title: string;
+  text: string;
+}): { muscle: MuscleBucket | null } {
   const t = `${ins.title} ${ins.text}`.toLowerCase();
   const inc =
     /increase|increasing|add(ing)?|больше|увелич|добавля/.test(t) &&
@@ -39,6 +72,7 @@ function isMixedLanguageLabel(label: string): boolean {
 export function validateAiCoachSuggestion(
   result: SuggestNextWorkoutResponse,
   aiDecisionContext: AiDecisionContext | null,
+  exerciseCatalog?: Exercise[] | null,
 ): Result {
   const warnings: string[] = [];
 
@@ -54,9 +88,12 @@ export function validateAiCoachSuggestion(
 
   // 2) Insight consistency
   const progressedByMuscle = new Map<string, number>();
+  const catalog = exerciseCatalog?.length ? buildCatalogLookup(exerciseCatalog) : null;
   for (const ex of result.exercises) {
     if (ex.decision === "maintain") continue;
-    const b = muscleBucket(ex.name);
+    if (!catalog) continue;
+    const row = resolveCatalogRowByExerciseName(ex.name, catalog);
+    const b = row ? primaryMuscleToProgressBucket(row.primaryMuscle) : "other";
     if (b === "other") continue;
     progressedByMuscle.set(b, (progressedByMuscle.get(b) ?? 0) + 1);
   }

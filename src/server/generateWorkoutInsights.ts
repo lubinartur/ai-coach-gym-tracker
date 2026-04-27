@@ -3,7 +3,12 @@ import { buildWorkoutInsightContext } from "@/lib/buildWorkoutInsightContext";
 import { WORKOUT_INSIGHT_PROMPT } from "@/lib/prompts/workoutInsightPrompt";
 import { stripJsonFence } from "@/server/openaiPlanJson";
 import type { AiDecisionContext, AiInsight, SuggestNextWorkoutResponse } from "@/types/aiCoach";
-import { getExerciseMuscleGroup, type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import type { Exercise } from "@/types/trainingDiary";
+import {
+  buildCatalogLookup,
+  resolveCatalogRowByExerciseName,
+} from "@/services/exerciseCatalogResolve";
 
 const INSIGHT_MODEL = "gpt-4.1-mini";
 
@@ -73,11 +78,15 @@ const MUSCLE_KEYWORDS: { k: PrimaryMuscleGroup; re: RegExp }[] = [
   { k: "forearms", re: /\b(forearm|предплеч)/i },
 ];
 
-function muscleGroupsInWorkout(workout: SuggestNextWorkoutResponse): Set<PrimaryMuscleGroup> {
+function muscleGroupsInWorkout(
+  workout: SuggestNextWorkoutResponse,
+  catalog: Exercise[],
+): Set<PrimaryMuscleGroup> {
+  const lookup = buildCatalogLookup(catalog);
   const s = new Set<PrimaryMuscleGroup>();
   for (const ex of workout.exercises) {
-    const g = getExerciseMuscleGroup(ex.name);
-    if (g !== "other") s.add(g);
+    const row = resolveCatalogRowByExerciseName(ex.name, lookup);
+    if (row && row.primaryMuscle !== "other") s.add(row.primaryMuscle);
   }
   return s;
 }
@@ -139,9 +148,10 @@ function validateInsights(
   insights: AiInsight[],
   ctx: ReturnType<typeof buildWorkoutInsightContext>,
   workout: SuggestNextWorkoutResponse,
+  catalog: Exercise[],
   warnings: string[],
 ): boolean {
-  const allowedMuscles = muscleGroupsInWorkout(workout);
+  const allowedMuscles = muscleGroupsInWorkout(workout, catalog);
   const inc = ctx.actualChanges.increasedExercises.length;
   for (const i of insights) {
     if (insightMentionsProgress(i.title, i.text) && inc === 0) {
@@ -224,6 +234,7 @@ export async function generateWorkoutInsights(input: {
   workoutResult: SuggestNextWorkoutResponse;
   aiDecisionContext: AiDecisionContext | null | undefined;
   language: string | undefined;
+  exerciseCatalog: Exercise[];
   openaiClient: WorkoutInsightsOpenAIClient | null;
 }): Promise<{
   insights: AiInsight[];
@@ -235,6 +246,7 @@ export async function generateWorkoutInsights(input: {
     input.workoutResult,
     input.aiDecisionContext,
     input.language,
+    input.exerciseCatalog,
   );
 
   if (!input.openaiClient) {
@@ -264,7 +276,7 @@ export async function generateWorkoutInsights(input: {
 
   const incLen = ctx.actualChanges.increasedExercises.length;
   const insights = rawToAiInsights(rawList, incLen);
-  if (!validateInsights(insights, ctx, input.workoutResult, warnings)) {
+  if (!validateInsights(insights, ctx, input.workoutResult, input.exerciseCatalog, warnings)) {
     return { insights: buildFallbackInsights(ctx), source: "fallback", warnings };
   }
   if (insights.length === 0) {

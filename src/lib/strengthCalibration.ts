@@ -148,6 +148,31 @@ function isIsolationOrAccessory(name: string): boolean {
 }
 
 /**
+ * Horizontal / bench-press family for onboarding bench calibration.
+ * Excludes vertical press (OHP) and similar; does not match "shoulder press" without "bench".
+ */
+export function isBenchPressCalibrationName(name: string): boolean {
+  const n = String(name ?? "").trim().toLowerCase();
+  if (!n) return false;
+  if (/\b(overhead|ohp|arnold)\b/.test(n)) return false;
+  if (/\bshoulder press\b/.test(n) && !/\bbench\b/.test(n)) return false;
+
+  return (
+    /(?:^|\s)(?:flat\s+)?bench\s+press/.test(n) ||
+    /barbell\s+bench(\s+press)?/.test(n) ||
+    /flat\s+bench(\s+press)?/.test(n) ||
+    /incline\s+bench\s+press/.test(n) ||
+    /incline\s+barbell\s+press/.test(n) ||
+    /smith\s+bench(\s+press)?/.test(n) ||
+    /dumbbell\s+bench(\s+press)?/.test(n) ||
+    /\bdb\s+bench(\s+press)?/.test(n) ||
+    /incline\s+dumbbell\s+press/.test(n) ||
+    /machine\s+chest\s+press/.test(n) ||
+    /(^|[^a-z0-9])chest\s+press([^a-z0-9]|$)/.test(n)
+  );
+}
+
+/**
  * High-level mapping from generated exercise names to calibration categories.
  * Returns null if we should not infer loads from calibration.
  */
@@ -163,10 +188,7 @@ export function estimateBaselineWeightForExerciseFromCalibration(input: {
   // Explicit "do not map" cases.
   if (/leg curl|hamstring curl/.test(n)) return null;
 
-  const benchLike =
-    /bench press|barbell bench|dumbbell bench|db bench|incline dumbbell press|machine chest press/.test(
-      n,
-    );
+  const benchLike = isBenchPressCalibrationName(n);
   const squatLike =
     /squat|leg press|hack squat|bulgarian split squat|split squat|lunge/.test(n);
   const deadliftLike = /deadlift|romanian deadlift|\brdl\b|hip thrust/.test(n);
@@ -188,6 +210,7 @@ export function estimateBaselineWeightForExerciseFromCalibration(input: {
   const variationScaling = (() => {
     // Bench variations
     if (/incline dumbbell press/.test(n)) return 0.65; // 60–70%
+    if (/incline barbell press/.test(n)) return 0.65; // 60–70%
     if (/machine chest press/.test(n)) return 0.75; // 70–80%
     if (/cable fly|pec deck|fly/.test(n)) return 0.45; // 40–50%
 

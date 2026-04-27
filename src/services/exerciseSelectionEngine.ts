@@ -1,5 +1,5 @@
 import { normalizeExerciseName } from "@/lib/exerciseName";
-import { getExerciseMuscleGroup, mapCatalogMuscleToPrimary, type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import { type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import { SLOT_EXERCISES, type SkeletonSlot, type WorkoutSplit } from "@/lib/workoutSkeleton";
 import { listMatchingSlotsForName } from "@/lib/workoutRoleRepair";
 import type { AiDecisionContext } from "@/types/aiCoach";
@@ -115,10 +115,8 @@ function normSetFromRecentWorkouts(context: AiDecisionContext, takeSessions: num
   return used;
 }
 
-function primaryMuscleForExercise(ex: Pick<Exercise, "name" | "muscleGroup">): PrimaryMuscleGroup {
-  const m = mapCatalogMuscleToPrimary(ex.muscleGroup);
-  if (m) return m;
-  return getExerciseMuscleGroup(ex.name);
+function primaryMuscleForExercise(ex: Exercise): PrimaryMuscleGroup {
+  return ex.primaryMuscle ?? "other";
 }
 
 function equipmentKey(raw: string | undefined): string | null {

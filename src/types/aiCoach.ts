@@ -1,5 +1,6 @@
 import type { AppLanguage } from "@/i18n/language";
 import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
+import type { CoachMemoryContext } from "@/services/aiCoachMemory";
 import type { AthleteProfile } from "./athleteProfile";
 import type { UserSettings } from "./index";
 import type { Exercise, WorkoutSession } from "./trainingDiary";
@@ -128,15 +129,25 @@ export type SuggestNextWorkoutAiDebug = {
   exerciseLoadDebug?: Array<{
     exercise: string;
     programmedLoad: number | null;
+    /** True when a calibration-derived estimate exists for this exercise name. */
     calibrationMatch: boolean;
+    /** Final per-exercise calibration estimate used for load logic (if any). */
     calibrationWeight: number | null;
     finalWeight: number;
-    source: "calibration" | "llm" | "history" | "fallback";
+    source: "calibration" | "calibration_rpe" | "llm" | "history" | "fallback";
+    /** Payload includes at least one valid onboarding strength calibration entry. */
+    calibrationAvailable?: boolean;
+    /** Estimated load from calibration mapping for this exercise; mirrors calibrationWeight when set. */
+    calibrationEstimate?: number;
+    /** True when `source` is `calibration` (numeric load from calibration). */
+    calibrationMatched?: boolean;
   }>;
 
   coachModeProfileApplied?: boolean;
   coachModeSource?: "profile_starter";
   coachModeReason?: string;
+  /** Post-generation progression safety notes (e.g. capped load / sets). */
+  progressionGuards?: string[];
 };
 
 export type SuggestNextWorkoutResponse = {
@@ -180,6 +191,11 @@ export type SerializableWorkoutForAi = {
   totalVolume: number;
   exercises: {
     name: string;
+    exerciseId?: string;
+    /** Set when the exercise resolved to a catalog row. */
+    primaryMuscle?: PrimaryMuscleGroup;
+    /** True when the exercise could not be resolved (no regex fallback). */
+    unknownExercise?: boolean;
     sets: { weight: number; reps: number; volume: number }[];
   }[];
 };
@@ -372,6 +388,10 @@ export type WorkoutAiReview = {
   needs_attention: string[];
   next_time: string[];
   exercise_notes: { name: string; note: string }[];
+  /** Optional structured insights; if absent, UI may derive cards from `went_well`. */
+  insights?: AiInsight[];
+  /** Optional extra warnings; if absent, UI uses `needs_attention`. */
+  warnings?: string[];
 };
 
 /**
@@ -555,6 +575,11 @@ export type AiCoachRequestPayload = {
   mostRecentExercises: string[];
   exerciseStats: AiCoachExerciseStat[];
   favorites: { name: string; muscleGroup?: string; equipment?: string }[];
+  /**
+   * Canonical Dexie exercise catalog snapshot (enriched) used as the deterministic
+   * candidate pool for suggest-next structure selection.
+   */
+  exerciseCatalog: Exercise[];
   settings: {
     defaultRestSec?: number;
     planningStyle?: string;
@@ -594,6 +619,9 @@ export type AiCoachRequestPayload = {
   /** Unified analysis pipeline summary (primary source of truth for the model). */
   aiDecisionContext: AiDecisionContext;
   quickTemplates: { id: string; label: string; muscleLine: string; exercises: string[] }[];
+
+  /** Optional: durable per-exercise coach memory context (built client-side from Dexie). */
+  coachMemory?: CoachMemoryContext;
 
   /**
    * Optional UI-driven override: user requested a custom workout target.

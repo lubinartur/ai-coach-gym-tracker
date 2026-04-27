@@ -17,13 +17,15 @@ import {
 import { formatMMSS } from "@/lib/formatMMSS";
 import { setVolumeFor } from "@/lib/workoutSetQuick";
 import { getOrCreateSettings } from "@/db/settings";
-import { listExercises } from "@/db/exercises";
+import { getOrCreateExerciseByName, listExercises } from "@/db/exercises";
 import {
   listWorkoutSessions,
   saveWorkoutSessionDraft,
   setWorkoutSessionAiReview,
 } from "@/db/workoutSessions";
 import { buildWorkoutReviewRequestPayload } from "@/services/workoutReviewContext";
+import { inferCoachMemoryFromNote } from "@/services/aiCoachMemoryInference";
+import { addCoachMemoryEntries } from "@/db/coachMemory";
 import type { WorkoutAiReview } from "@/types/aiCoach";
 import {
   formatWorkoutLastPerformed,
@@ -43,6 +45,8 @@ import { useI18n } from "@/i18n/LocaleContext";
 import type { AiCoachMode, AiDecisionContext, SuggestNextWorkoutResponse } from "@/types/aiCoach";
 import { AiCoachSuggestionResult } from "@/components/ai/AiCoachSuggestionResult";
 import { normalizeSuggestNextResponseClient } from "@/lib/aiCoachResponseNormalize";
+import { saveAiDecisionTrace } from "@/db/aiDecisionTrace";
+import { validateAiCoachSuggestion } from "@/lib/aiCoachQualityCheck";
 import { buildAiCoachRequestPayload } from "@/services/aiCoachContext";
 
 type WorkoutMode = "idle" | "active";
@@ -102,6 +106,7 @@ export function WorkoutView() {
   const [aiResult, setAiResult] = useState<SuggestNextWorkoutResponse | null>(null);
   const [aiDecisionContext, setAiDecisionContext] =
     useState<AiDecisionContext | null>(null);
+  const [aiExerciseCatalog, setAiExerciseCatalog] = useState<Exercise[] | null>(null);
   const [aiMode, setAiMode] = useState<AiCoachMode>("history_based");
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [customBuilderOpen, setCustomBuilderOpen] = useState(false);
@@ -117,6 +122,7 @@ export function WorkoutView() {
       setAiResult(null);
       setAiError(null);
       setAiDecisionContext(null);
+      setAiExerciseCatalog(null);
     } else if (aiError) {
       // Clear stale errors when user changes mode.
       setAiError(null);
@@ -474,23 +480,26 @@ export function WorkoutView() {
     }));
   }, []);
 
-  const applyAiDraftPayload = useCallback((data: AiWorkoutDraftPayload) => {
+  const applyAiDraftPayload = useCallback(async (data: AiWorkoutDraftPayload) => {
     // AI recommendations should land in a "prepared" edit state. Timer starts only when user presses Start.
     if (!data.exercises?.length) return;
     aiDraftAppliedRef.current = true;
-    const catalog = exercises;
     const titleTrim = data.title?.trim() || "Workout";
+    const resolved = await Promise.all(
+      data.exercises.map(async (ex) => {
+        const row = await getOrCreateExerciseByName(ex.name, { ensureEnriched: true });
+        return { row, ex };
+      }),
+    );
     queueMicrotask(() => {
       setFinishSummary(null);
       setMode("active");
       setTitle(titleTrim);
       setNotes("");
-      const wex: WorkoutExercise[] = data.exercises.map((ex) => {
-        const k = normalizeExerciseName(ex.name);
-        const match = catalog.find((e) => normalizeExerciseName(e.name) === k);
+      const wex: WorkoutExercise[] = resolved.map(({ row, ex }) => {
         return {
           id: createId(),
-          ...(match ? { exerciseId: match.id } : {}),
+          exerciseId: row.id,
           name: ex.name,
           sets: (ex.sets ?? []).map((s) => {
             const setId = createId();
@@ -533,13 +542,14 @@ export function WorkoutView() {
     } catch {
       return;
     }
-    applyAiDraftPayload(data);
+    void applyAiDraftPayload(data);
   }, [loadingExercises, applyAiDraftPayload]);
 
   async function requestNextWorkout() {
     setAiError(null);
     setAiResult(null);
     setAiDecisionContext(null);
+    setAiExerciseCatalog(null);
     setAiLoading(true);
     try {
       const payload = await buildAiCoachRequestPayload({ aiMode });
@@ -553,10 +563,51 @@ export function WorkoutView() {
         throw new Error(t("error_suggestion"));
       }
       setAiDecisionContext(payload.aiDecisionContext);
+      setAiExerciseCatalog(payload.exerciseCatalog);
       const parsed: unknown = JSON.parse(text);
-      setAiResult(
-        normalizeSuggestNextResponseClient(parsed, payload.trainingSignals),
-      );
+      const normalized = normalizeSuggestNextResponseClient(parsed, payload.trainingSignals);
+      setAiResult(normalized);
+      if (process.env.NODE_ENV !== "production" && normalized.aiDebug) {
+        try {
+          const dbg = normalized.aiDebug;
+          const qc = validateAiCoachSuggestion(
+            normalized,
+            payload.aiDecisionContext,
+            payload.exerciseCatalog,
+          );
+          const mode =
+            dbg.mode === "coach"
+              ? "coach"
+              : dbg.generationSource === "adaptive_history"
+                ? "adaptive"
+                : "history";
+          const split = String(normalized.training_signals?.split ?? "Unknown");
+          await saveAiDecisionTrace({
+            mode,
+            generationSource: String(dbg.generationSource ?? "unknown"),
+            insightSource: String(dbg.insightSource ?? "unknown"),
+            split,
+            preferredSplits: Array.isArray(dbg.preferredNextSplits) ? dbg.preferredNextSplits : [],
+            qualityCheckPassed: qc.warnings.length === 0,
+            strengthCalibrationUsed: dbg.strengthCalibrationUsed === true,
+            payloadHasCalibration: dbg.strengthCalibrationDebug?.payloadHasStrengthCalibration === true,
+            decisionContextHasCalibration:
+              dbg.strengthCalibrationDebug?.decisionContextHasStrengthCalibration === true,
+            exerciseLoadSources: Array.isArray(dbg.exerciseLoadDebug)
+              ? dbg.exerciseLoadDebug.map((r) => ({
+                  exercise: r.exercise,
+                  source: r.source,
+                  ...(typeof r.finalWeight === "number" && Number.isFinite(r.finalWeight)
+                    ? { finalWeight: r.finalWeight }
+                    : {}),
+                }))
+              : [],
+            exerciseNames: normalized.exercises.map((e) => e.name),
+          });
+        } catch {
+          // Best-effort only: never break the workout flow.
+        }
+      }
     } catch (e) {
       setAiError(e instanceof Error ? e.message : t("error_suggestion"));
     } finally {
@@ -603,7 +654,7 @@ export function WorkoutView() {
           sets: e.sets.map((s) => ({ weight: s.weight, reps: s.reps })),
         })),
       };
-      applyAiDraftPayload(draft);
+      void applyAiDraftPayload(draft);
       setCustomBuilderOpen(false);
     } finally {
       setCustomGenerating(false);
@@ -613,6 +664,7 @@ export function WorkoutView() {
   function startSuggestedWorkout() {
     if (!aiResult || aiResult.exercises.length === 0) return;
     setAiDecisionContext(null);
+    setAiExerciseCatalog(null);
     const payload: AiWorkoutDraftPayload = {
       title: aiResult.title.trim() || "Workout",
       exercises: aiResult.exercises.map((e) => ({
@@ -620,7 +672,7 @@ export function WorkoutView() {
         sets: e.sets.map((s) => ({ weight: s.weight, reps: s.reps })),
       })),
     };
-    applyAiDraftPayload(payload);
+    void applyAiDraftPayload(payload);
     setAiResult(null);
   }
 
@@ -629,12 +681,24 @@ export function WorkoutView() {
     setMode("active");
     setTitle(t.label);
     setNotes("");
-    const wex: WorkoutExercise[] = t.exercises.map((name) => ({
-      id: createId(),
-      name,
-      sets: [],
-    }));
-    setWorkoutExercises(wex);
+    void (async () => {
+      const rows = await Promise.all(
+        t.exercises.map(async (name) => {
+          const row = await getOrCreateExerciseByName(name, { ensureEnriched: true });
+          return { row, name };
+        }),
+      );
+      const wex: WorkoutExercise[] = rows.map(({ row, name }) => ({
+        id: createId(),
+        exerciseId: row.id,
+        name,
+        sets: [],
+      }));
+      setWorkoutExercises(wex);
+      for (const ex of wex) {
+        void hydrateLastTime(ex.id, ex.name);
+      }
+    })();
     setPickerOpen(false);
     setPickerQuery("");
     setPickerCategory(null);
@@ -644,9 +708,6 @@ export function WorkoutView() {
     setStartedAt(null);
     setElapsedSec(0);
     setEditingExerciseId(null);
-    for (const ex of wex) {
-      void hydrateLastTime(ex.id, ex.name);
-    }
   }
 
   function setExerciseCardEl(id: string) {
@@ -690,22 +751,17 @@ export function WorkoutView() {
   function addExerciseFromName(name: string) {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const k = normalizeExerciseName(trimmed);
-    const match = exercises.find(
-      (x) => normalizeExerciseName(x.name) === k,
-    );
-    if (match) {
-      addExerciseFromLibraryRow(match);
-      return;
-    }
     const localId = createId();
-    setWorkoutExercises((prev) => [
-      ...prev,
-      { id: localId, name: trimmed, sets: [] },
-    ]);
-    closePickerAfterAdd();
-    void hydrateLastTime(localId, trimmed);
-    scrollToExerciseCard(localId);
+    void (async () => {
+      const row = await getOrCreateExerciseByName(trimmed, { ensureEnriched: true });
+      setWorkoutExercises((prev) => [
+        ...prev,
+        { id: localId, exerciseId: row.id, name: trimmed, sets: [] },
+      ]);
+      closePickerAfterAdd();
+      void hydrateLastTime(localId, trimmed);
+      scrollToExerciseCard(localId);
+    })();
   }
 
   function copyLastSets(localExerciseId: string) {
@@ -837,6 +893,46 @@ export function WorkoutView() {
           setFinishSummary((prev) =>
             prev && prev.id === savedId ? { ...prev, aiReview: review } : prev,
           );
+
+          // Best-effort durable coach memory write (client-side Dexie).
+          try {
+            const sessionId = payload.completedSession?.id;
+            if (sessionId && Array.isArray(review.exercise_notes)) {
+              const byNorm = new Map<string, string>();
+              for (const ex of session.exercises ?? []) {
+                const k = normalizeExerciseName(ex.name);
+                if (k && ex.exerciseId && !byNorm.has(k)) byNorm.set(k, ex.exerciseId);
+              }
+              const entries = review.exercise_notes
+                .map((row) => {
+                  const exerciseName = row?.name?.trim();
+                  const note = row?.note?.trim();
+                  if (!exerciseName || !note) return null;
+                  const inferred = inferCoachMemoryFromNote(note);
+                  if (!inferred) return null;
+                  const k = normalizeExerciseName(exerciseName) ?? "";
+                  const exerciseId = k ? byNorm.get(k) : undefined;
+                  return {
+                    createdAt: Date.now(),
+                    sessionId,
+                    exerciseId,
+                    exerciseName,
+                    normalizedExerciseName: k || normalizeExerciseName(exerciseName) || exerciseName.toLowerCase(),
+                    observation: inferred.observation,
+                    decision: inferred.decision,
+                    confidence: inferred.confidence,
+                    source: "review_inferred" as const,
+                    schemaVersion: 1 as const,
+                  };
+                })
+                .filter((x): x is NonNullable<typeof x> => Boolean(x));
+              if (entries.length) {
+                await addCoachMemoryEntries(entries);
+              }
+            }
+          } catch {
+            // ignore
+          }
         } catch {
           setWorkoutReviewError("Could not generate review.");
         } finally {
@@ -972,6 +1068,7 @@ export function WorkoutView() {
                         <AiCoachSuggestionResult
                           result={aiResult}
                           decisionContext={aiDecisionContext}
+                          exerciseCatalog={aiExerciseCatalog ?? undefined}
                           onStart={startSuggestedWorkout}
                           variant="compact"
                         />
@@ -1004,6 +1101,7 @@ export function WorkoutView() {
                   aiReview={finishSummary.aiReview ?? null}
                   reviewLoading={workoutReviewLoading}
                   reviewError={workoutReviewError}
+                  trainingSignals={aiResult?.training_signals ?? null}
                 />
               </div>
               <div className="flex flex-col gap-2 border-t border-neutral-800/80 p-4">

@@ -1,6 +1,7 @@
 import { listExercises } from "@/db/exercises";
 import { listWorkoutSessions } from "@/db/workoutSessions";
 import { normalizeExerciseName } from "@/lib/exerciseName";
+import { buildCatalogLookup, resolveWorkoutExerciseToCatalogExercise } from "@/services/exerciseCatalogResolve";
 import type { WorkoutSession } from "@/types/trainingDiary";
 
 export type MostUsedExercise = {
@@ -34,6 +35,7 @@ function exerciseVolumeInSession(ex: WorkoutSession["exercises"][number]): numbe
 export async function getGymProgressData(): Promise<GymProgressData> {
   const sessions = await listWorkoutSessions();
   const catalog = await listExercises();
+  const catalogLookup = buildCatalogLookup(catalog);
   const idByNorm = new Map<string, string>();
   for (const e of catalog) {
     const k = normalizeExerciseName(e.name);
@@ -43,9 +45,13 @@ export async function getGymProgressData(): Promise<GymProgressData> {
   const firstNameByKey = new Map<string, string>();
   for (const s of sessions) {
     for (const ex of s.exercises) {
+      const row = resolveWorkoutExerciseToCatalogExercise(ex, catalogLookup);
       const k = normalizeExerciseName(ex.name);
-      if (k && !firstNameByKey.has(k)) {
-        firstNameByKey.set(k, ex.name.trim() || ex.name);
+      const stableKey = row?.id ?? (k ? k : ex.id);
+      if (stableKey && !firstNameByKey.has(stableKey)) {
+        const label =
+          (row?.name && row.name.trim()) || ex.name.trim() || ex.name;
+        firstNameByKey.set(stableKey, label);
       }
     }
   }
@@ -61,10 +67,13 @@ export async function getGymProgressData(): Promise<GymProgressData> {
   for (const s of sessions) {
     const seenInSession = new Set<string>();
     for (const ex of s.exercises) {
+      const row = resolveWorkoutExerciseToCatalogExercise(ex, catalogLookup);
       const k = normalizeExerciseName(ex.name);
-      if (!k || seenInSession.has(k)) continue;
-      seenInSession.add(k);
-      sessionCount.set(k, (sessionCount.get(k) ?? 0) + 1);
+      if (!k) continue;
+      const key = row?.id ?? k;
+      if (seenInSession.has(key)) continue;
+      seenInSession.add(key);
+      sessionCount.set(key, (sessionCount.get(key) ?? 0) + 1);
     }
   }
 
@@ -72,7 +81,7 @@ export async function getGymProgressData(): Promise<GymProgressData> {
     .map(([k, count]) => ({
       name: firstNameByKey.get(k) ?? k,
       count,
-      exerciseId: idByNorm.get(k),
+      exerciseId: catalogLookup.byId.has(k) ? k : idByNorm.get(k),
     }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);

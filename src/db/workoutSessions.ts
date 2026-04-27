@@ -2,6 +2,7 @@ import { db } from "./database";
 import { createId } from "@/lib/id";
 import { clearWorkoutHistory } from "@/lib/clearWorkoutHistory";
 import { getWorkoutChronologyTime } from "@/lib/workoutChronology";
+import { getOrCreateExerciseByName } from "@/db/exercises";
 import type { WorkoutAiReview } from "@/types/aiCoach";
 import type { WorkoutSession } from "@/types/trainingDiary";
 
@@ -29,13 +30,23 @@ export async function saveWorkoutSessionDraft(input: {
   exercises: WorkoutSession["exercises"];
 }): Promise<WorkoutSession> {
   const now = new Date().toISOString();
-  const exercises = input.exercises.map((ex) => ({
-    ...ex,
-    sets: ex.sets.map((s) => ({
-      ...s,
-      volume: Math.max(0, s.weight) * Math.max(0, s.reps),
-    })),
-  }));
+  const exercises = await Promise.all(
+    input.exercises.map(async (ex) => {
+      const resolvedId =
+        ex.exerciseId?.trim() ||
+        (await getOrCreateExerciseByName(ex.name, { ensureEnriched: true })).id;
+      return {
+        ...ex,
+        exerciseId: resolvedId,
+        // Keep the name as a snapshot; do not rewrite user-entered casing/spelling.
+        name: ex.name,
+        sets: ex.sets.map((s) => ({
+          ...s,
+          volume: Math.max(0, s.weight) * Math.max(0, s.reps),
+        })),
+      };
+    }),
+  );
 
   const totalSets = exercises.reduce((sum, ex) => sum + ex.sets.length, 0);
   const totalVolume = exercises.reduce(

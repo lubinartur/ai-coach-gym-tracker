@@ -5,7 +5,16 @@ import { muscleLineForHeroTitle } from "@/lib/aiCoachResultLabels";
 import { enforceWorkoutReviewLimits } from "@/lib/workoutReviewDisplay";
 import { useI18n } from "@/i18n/LocaleContext";
 import type { AppLanguage } from "@/i18n/language";
-import type { WorkoutAiReview } from "@/types/aiCoach";
+import type { MessageKey } from "@/i18n/dictionary";
+import type {
+  AiInsight,
+  AiInsightType,
+  AiTrainingSignalsResponse,
+  WorkoutAiReview,
+} from "@/types/aiCoach";
+import { InsightCard, type InsightTone } from "@/components/ui/InsightCard";
+import { Card } from "@/components/ui/Card";
+import { SectionHeader } from "@/components/ui/SectionHeader";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -45,6 +54,82 @@ function scorePresentationClasses(score: number): {
   };
 }
 
+function insightToneFromType(type: AiInsightType): InsightTone {
+  switch (type) {
+    case "progress":
+      return "success";
+    case "fatigue":
+      return "warning";
+    case "risk":
+      return "danger";
+    case "opportunity":
+      return "violet";
+    case "balance":
+    default:
+      return "neutral";
+  }
+}
+
+function buildInsightsList(r: WorkoutAiReview): AiInsight[] {
+  if (r.insights?.length) {
+    return r.insights;
+  }
+  return r.went_well.map((text) => ({
+    type: "progress" as const,
+    title: "·",
+    text,
+  }));
+}
+
+function buildWarningsList(r: WorkoutAiReview): string[] {
+  if (r.warnings?.length) {
+    return r.warnings;
+  }
+  return r.needs_attention;
+}
+
+type T = (k: MessageKey) => string;
+
+function fatigueKey(f: AiTrainingSignalsResponse["fatigue"]): MessageKey {
+  if (f === "low") return "fatigue_low";
+  if (f === "moderate") return "fatigue_moderate";
+  if (f === "high") return "fatigue_high";
+  return "fatigue_unknown";
+}
+
+function volumeKey(v: AiTrainingSignalsResponse["volume_trend"]): MessageKey {
+  if (v === "up") return "trend_up";
+  if (v === "down") return "trend_down";
+  if (v === "stable") return "trend_flat";
+  return "trend_unknown";
+}
+
+function NextWorkoutHint({
+  trainingSignals,
+  t,
+}: {
+  trainingSignals: AiTrainingSignalsResponse;
+  t: T;
+}) {
+  const split = (trainingSignals.split ?? "").trim();
+  if (!split) return null;
+  return (
+    <section className="space-y-2" aria-label={t("review_section_next_hint")}>
+      <SectionHeader title={t("review_section_next_hint")} />
+      <Card className="!p-4">
+        <p className="text-sm font-medium leading-relaxed text-neutral-100">
+          {t("review_next_hint_lead").replace("{{split}}", split)}
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-neutral-500">
+          {t("review_next_hint_context")
+            .replace("{{fatigue}}", t(fatigueKey(trainingSignals.fatigue)))
+            .replace("{{volume}}", t(volumeKey(trainingSignals.volume_trend)))}
+        </p>
+      </Card>
+    </section>
+  );
+}
+
 export type WorkoutReviewExerciseRow = {
   id: string;
   label: string;
@@ -52,27 +137,29 @@ export type WorkoutReviewExerciseRow = {
   vol: number;
 };
 
+type BaseProps = {
+  aiReview: WorkoutAiReview | null;
+  reviewLoading: boolean;
+  reviewError: string | null;
+  /** From last suggest-next `training_signals`, when available (e.g. post-finish on Workout). */
+  trainingSignals?: AiTrainingSignalsResponse | null;
+};
+
 type Props =
-  | {
+  | (BaseProps & {
       layout: "postSave";
       title: string;
       durationMin?: number;
       totalSets: number;
       totalVolume: number;
       exerciseRows: WorkoutReviewExerciseRow[];
-      aiReview: WorkoutAiReview | null;
-      reviewLoading: boolean;
-      reviewError: string | null;
-    }
-  | {
+    })
+  | (BaseProps & {
       layout: "inline";
-      aiReview: WorkoutAiReview | null;
-      reviewLoading: boolean;
-      reviewError: string | null;
-    };
+    });
 
 export function WorkoutReviewContent(props: Props) {
-  const { aiReview, reviewLoading, reviewError, layout } = props;
+  const { aiReview, reviewLoading, reviewError, layout, trainingSignals } = props;
   const { t, locale } = useI18n();
   const displayReview = useMemo(
     () => (aiReview ? enforceWorkoutReviewLimits(aiReview) : null),
@@ -161,52 +248,74 @@ export function WorkoutReviewContent(props: Props) {
             </div>
           ) : null}
 
-          {displayReview.went_well.length > 0 ? (
-            <div>
-              <h3 className="text-base font-semibold text-emerald-400/95">
-                {t("review_went_well")}
-              </h3>
-              <ul className="mt-2 list-none space-y-2 text-base leading-relaxed text-neutral-200">
-                {displayReview.went_well.map((line, i) => (
-                  <li key={`w-${i}`} className="flex gap-2">
-                    <span className="shrink-0 text-emerald-500/80">·</span>
-                    <span className="min-w-0">{line}</span>
-                  </li>
-                ))}
+          {buildInsightsList(displayReview).length > 0 ? (
+            <section className="space-y-2" aria-label={t("review_section_what_went_well")}>
+              <SectionHeader title={t("review_section_what_went_well")} />
+              <ul className="space-y-2">
+                {buildInsightsList(displayReview).map((ins, i) => {
+                  const tone = insightToneFromType(ins.type);
+                  const isSyntheticTitle = ins.title === "·";
+                  return (
+                    <li key={`ins-${i}`}>
+                      <InsightCard
+                        compact
+                        tone={tone}
+                        title={
+                          isSyntheticTitle ? (
+                            <span className="text-emerald-400/90" aria-hidden>
+                              ·
+                            </span>
+                          ) : (
+                            ins.title
+                          )
+                        }
+                        body={ins.text}
+                      />
+                    </li>
+                  );
+                })}
               </ul>
-            </div>
+            </section>
           ) : null}
 
-          {displayReview.needs_attention.length > 0 ? (
-            <div>
-              <h3 className="text-base font-semibold text-amber-200/90">
-                {t("review_needs_attention")}
-              </h3>
-              <ul className="mt-2 list-none space-y-2 text-base leading-relaxed text-neutral-200">
-                {displayReview.needs_attention.map((line, i) => (
-                  <li key={`a-${i}`} className="flex gap-2">
-                    <span className="shrink-0 text-amber-500/70">·</span>
-                    <span className="min-w-0">{line}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {buildWarningsList(displayReview).length > 0 ? (
+            <section className="space-y-2" aria-label={t("review_section_what_to_adjust")}>
+              <SectionHeader title={t("review_section_what_to_adjust")} />
+              <Card className="border-amber-500/25 bg-amber-500/[0.04] !p-4">
+                <ul className="list-none space-y-2.5 text-sm leading-relaxed text-amber-100/90">
+                  {buildWarningsList(displayReview).map((line, i) => (
+                    <li key={`w-${i}`} className="flex gap-2">
+                      <span className="shrink-0 text-amber-500/80" aria-hidden>
+                        ·
+                      </span>
+                      <span className="min-w-0">{line}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            </section>
+          ) : null}
+
+          {trainingSignals &&
+          typeof trainingSignals.split === "string" &&
+          trainingSignals.split.trim() ? (
+            <NextWorkoutHint trainingSignals={trainingSignals} t={t} />
           ) : null}
 
           {displayReview.next_time.length > 0 ? (
-            <div>
-              <h3 className="text-base font-semibold text-violet-300/90">
-                {t("review_next_session")}
-              </h3>
-              <ul className="mt-2 list-none space-y-2 text-base leading-relaxed text-neutral-200">
+            <section className="space-y-2">
+              <SectionHeader title={t("review_next_session")} />
+              <ul className="list-none space-y-2 text-sm leading-relaxed text-neutral-200">
                 {displayReview.next_time.map((line, i) => (
                   <li key={`n-${i}`} className="flex gap-2">
-                    <span className="shrink-0 text-violet-500/70">·</span>
+                    <span className="shrink-0 text-violet-500/70" aria-hidden>
+                      ·
+                    </span>
                     <span className="min-w-0">{line}</span>
                   </li>
                 ))}
               </ul>
-            </div>
+            </section>
           ) : null}
 
           {displayReview.exercise_notes.length > 0 ? (
@@ -233,11 +342,11 @@ export function WorkoutReviewContent(props: Props) {
   );
 
   if (layout === "inline") {
-    return <div className="mx-auto max-w-prose space-y-4">{coachDebrief}</div>;
+    return <div className="mx-auto min-w-0 max-w-prose space-y-4">{coachDebrief}</div>;
   }
 
   return (
-    <div className="mx-auto max-w-prose space-y-6">
+    <div className="mx-auto min-w-0 max-w-prose space-y-6">
       <div>
         <p className="text-sm font-medium text-emerald-400/90">
           {t("workout_complete")}
@@ -252,65 +361,65 @@ export function WorkoutReviewContent(props: Props) {
         ) : null}
       </div>
 
-      <div>
-        <h3 className="text-sm font-medium text-neutral-500">
-          {t("review_stats_heading")}
-        </h3>
-        <div className="mt-2 space-y-2 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-4">
-          <div className="flex items-baseline justify-between gap-3 text-base">
-            <span className="text-sm text-neutral-500">
-              {t("duration_label")}
-            </span>
-            <span className="text-lg font-semibold tabular-nums text-white">
-              {durationText}
-            </span>
-          </div>
-          <div className="flex items-baseline justify-between gap-3 text-base">
-            <span className="text-sm text-neutral-500">{t("exercises")}</span>
-            <span className="text-lg font-semibold text-white">
-              {exerciseRows.length}
-            </span>
-          </div>
-          <div className="flex items-baseline justify-between gap-3 text-base">
-            <span className="text-sm text-neutral-500">
-              {t("review_stat_sets")}
-            </span>
-            <span className="text-lg font-semibold tabular-nums text-white">
-              {totalSets}
-            </span>
-          </div>
-          <div className="flex items-baseline justify-between gap-3 text-base">
-            <span className="text-sm text-neutral-500">
+      <section className="space-y-2" aria-label={t("review_section_workout_summary")}>
+        <SectionHeader title={t("review_section_workout_summary")} />
+        <div className="grid grid-cols-2 gap-2 sm:gap-3">
+          <Card className="!p-3.5 sm:!p-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-500">
               {t("stat_total_volume")}
-            </span>
-            <span className="text-lg font-semibold tabular-nums text-white">
+            </p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-neutral-50 sm:text-xl">
               {formatKg(totalVolume, locale)} {t("stat_unit_kg")}
-            </span>
-          </div>
+            </p>
+          </Card>
+          <Card className="!p-3.5 sm:!p-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+              {t("review_stat_sets")}
+            </p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-neutral-50 sm:text-xl">
+              {totalSets}
+            </p>
+          </Card>
+          <Card className="!p-3.5 sm:!p-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+              {t("exercises")}
+            </p>
+            <p className="mt-1 text-lg font-semibold text-neutral-50 sm:text-xl">
+              {exerciseRows.length}
+            </p>
+          </Card>
+          <Card className="!p-3.5 sm:!p-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+              {t("duration_label")}
+            </p>
+            <p className="mt-1 text-lg font-semibold tabular-nums text-neutral-50 sm:text-xl">
+              {durationText}
+            </p>
+          </Card>
         </div>
-      </div>
+      </section>
 
-      <div>
-        <h3 className="text-sm font-medium text-neutral-500">
-          {t("workout_summary_section")}
-        </h3>
-        <ul className="mt-2 space-y-2 text-base">
-          {exerciseRows.map((ex) => (
-            <li
-              key={ex.id}
-              className="flex items-baseline justify-between gap-3 border-b border-neutral-800/60 pb-2 last:border-0 last:pb-0"
-            >
-              <span className="min-w-0 font-medium text-neutral-100 [line-height:1.4]">
-                {ex.label}
-              </span>
-              <span className="shrink-0 text-right text-sm text-neutral-400">
-                {ex.setCount} {t("label_sets")} · {formatKg(ex.vol, locale)}{" "}
-                {t("stat_unit_kg")}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
+      {exerciseRows.length > 0 ? (
+        <section className="space-y-2" aria-label={t("review_exercise_breakdown")}>
+          <SectionHeader title={t("review_exercise_breakdown")} />
+          <ul className="space-y-2 text-base">
+            {exerciseRows.map((ex) => (
+              <li
+                key={ex.id}
+                className="flex items-baseline justify-between gap-3 border-b border-neutral-800/60 pb-2 last:border-0 last:pb-0"
+              >
+                <span className="min-w-0 font-medium text-neutral-100 [line-height:1.4]">
+                  {ex.label}
+                </span>
+                <span className="shrink-0 text-right text-sm text-neutral-400">
+                  {ex.setCount} {t("label_sets")} · {formatKg(ex.vol, locale)}{" "}
+                  {t("stat_unit_kg")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       <div className="border-t border-neutral-800/80 pt-6">{coachDebrief}</div>
     </div>

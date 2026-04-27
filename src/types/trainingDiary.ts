@@ -1,13 +1,46 @@
 import type { WorkoutAiReview } from "@/types/aiCoach";
+import type {
+  ContraindicationTag,
+  EquipmentTag,
+  ExerciseSource,
+  MovementPattern,
+  PrimaryMuscleGroup,
+  SkeletonSlot,
+} from "@/types/exerciseCatalog";
 
 export type Exercise = {
   id: string;
   name: string;
+
+  // Phase 1 required (canonical catalog)
+  normalizedName: string;
+  primaryMuscle: PrimaryMuscleGroup;
+  equipmentTags: EquipmentTag[];
+  movementPattern: MovementPattern;
+  roleCompatibility: SkeletonSlot[];
+  contraindications: ContraindicationTag[];
+  substitutions: string[];
+  source: ExerciseSource;
+  isFavorite: boolean;
+
+  // Phase 1 optional (enrichment / later)
+  nameEn?: string;
+  nameRu?: string;
+  secondaryMuscles?: PrimaryMuscleGroup[];
+  difficulty?: "beginner" | "intermediate" | "advanced";
+  isCompound?: boolean;
+  bodyweight?: boolean;
+  stressLevel?: "low" | "medium" | "high";
+  defaultSets?: number;
+  defaultRepsMin?: number;
+  defaultRepsMax?: number;
+  defaultRestSeconds?: number;
+  rotationPriority?: number;
+
+  // Legacy transitional fields
   muscleGroup?: string;
   equipment?: string;
-  /** `library` if seeded/synced from local catalog; `custom` if user-created. Omitted = legacy. */
-  source?: "library" | "custom";
-  isFavorite?: boolean;
+
   createdAt: string;
   updatedAt: string;
 };

@@ -1,5 +1,6 @@
 import { normalizeExerciseName } from "@/lib/exerciseName";
 import type {
+  AiInsightType,
   WorkoutAiReview,
   WorkoutReviewGrade,
 } from "@/types/aiCoach";
@@ -104,6 +105,47 @@ export function enforceWorkoutReviewLimits(
         ? normalizeWorkoutReviewGrade(review.grade, 70)
         : undefined;
 
+  const exercise_notes = review.exercise_notes
+    .filter((n) => isKeyLiftExerciseName(n.name))
+    .map((n) => ({
+      name: n.name,
+      note: clampNoteForDisplay(n.note, NOTE_MAX),
+    }));
+
+  const insightTypes: AiInsightType[] = [
+    "progress",
+    "fatigue",
+    "balance",
+    "risk",
+    "opportunity",
+  ];
+  const insights =
+    Array.isArray(review.insights) && review.insights.length
+      ? review.insights
+          .filter(
+            (i) => i && typeof i.title === "string" && typeof i.text === "string",
+          )
+          .slice(0, 5)
+          .map((i) => {
+            const it = i.type;
+            const type: AiInsightType =
+              it && insightTypes.includes(it) ? it : "progress";
+            return {
+              type,
+              title: (i.title ?? "").trim() || "—",
+              text: (i.text ?? "").trim() || "—",
+            };
+          })
+      : undefined;
+
+  const warnings =
+    Array.isArray(review.warnings) && review.warnings.length
+      ? review.warnings
+          .filter((s) => typeof s === "string" && s.trim().length > 0)
+          .slice(0, 5)
+          .map((s) => oneSentence(s, BULLET_MAX))
+      : undefined;
+
   return {
     ...(scoreClamped !== undefined ? { score: scoreClamped } : {}),
     ...(gradeNorm ? { grade: gradeNorm } : {}),
@@ -120,11 +162,8 @@ export function enforceWorkoutReviewLimits(
     next_time: review.next_time
       .slice(0, 2)
       .map((s) => oneSentence(s, BULLET_MAX)),
-    exercise_notes: review.exercise_notes
-      .filter((n) => isKeyLiftExerciseName(n.name))
-      .map((n) => ({
-        name: n.name,
-        note: clampNoteForDisplay(n.note, NOTE_MAX),
-      })),
+    exercise_notes,
+    ...(insights?.length ? { insights } : {}),
+    ...(warnings?.length ? { warnings } : {}),
   };
 }

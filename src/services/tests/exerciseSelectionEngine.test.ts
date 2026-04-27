@@ -6,16 +6,28 @@ import type { AiDecisionContext } from "@/types/aiCoach";
 import type { EngineRuntimeContext } from "@/types/engineRuntimeContext";
 import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import type { RecoveryState } from "@/services/recoveryEngine";
+import type { Exercise } from "@/types/trainingDiary";
 
-function pullCatalog() {
-  return EXERCISE_METADATA_V1.map((m) => ({
-    id: "",
-    name: m.name,
-    muscleGroup: m.primaryMuscleGroup,
-    equipment: m.equipmentTags[0],
-    createdAt: "",
-    updatedAt: "",
-  }));
+function pullCatalog(): Exercise[] {
+  return EXERCISE_METADATA_V1.map(
+    (m) =>
+      ({
+        id: normalizeExerciseName(m.name) || m.name,
+        name: m.name,
+        normalizedName: normalizeExerciseName(m.name),
+        primaryMuscle: m.primaryMuscleGroup,
+        secondaryMuscles: m.secondaryMuscles,
+        equipmentTags: m.equipmentTags,
+        movementPattern: m.movementPattern,
+        roleCompatibility: m.roleCompatibility,
+        contraindications: m.contraindications,
+        substitutions: m.substitutions,
+        source: "metadata",
+        isFavorite: false,
+        createdAt: "",
+        updatedAt: "",
+      }) as Exercise,
+  );
 }
 
 function runtimePull(input: {

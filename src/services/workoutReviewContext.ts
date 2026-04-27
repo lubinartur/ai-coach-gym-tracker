@@ -57,7 +57,7 @@ export async function buildWorkoutReviewRequestPayload(
 
   const completed = rows[idx]!;
   const priorRaw = rows.slice(idx + 1, idx + 1 + MAX_PRIOR);
-  const priorSessions = priorRaw.map(serializeWorkoutForAi);
+  const priorSessions = priorRaw.map((s) => serializeWorkoutForAi(s, catalog));
 
   const favKeys = new Set(
     catalog

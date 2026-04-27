@@ -3,6 +3,7 @@
  * For the deeper coaching engine (trends, recovery, alerts), see `buildTrainingSignals` in `trainingSignalEngine.ts`.
  */
 import { normalizeExerciseName } from "@/lib/exerciseName";
+import type { PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import type { AthleteProfile } from "@/types/athleteProfile";
 import type { Exercise, WorkoutSession } from "@/types/trainingDiary";
 import type {
@@ -12,25 +13,25 @@ import type {
   TrainingSignals,
   VolumeTrend,
 } from "@/types/aiCoach";
+import {
+  buildCatalogLookup,
+  resolveWorkoutExerciseToCatalogExercise,
+} from "@/services/exerciseCatalogResolve";
 
-const TITLE_TOKENS: { re: RegExp; tag: string }[] = [
-  { re: /\bfull[-\s]?body|\bfull\s*day/i, tag: "Full body" },
-  { re: /\bleg|lower\s*body|squat|hinge/i, tag: "Legs" },
-  { re: /\bpush\b|chest|bench|tricep|overhead|ohp|shoulder press/i, tag: "Push" },
-  { re: /\bpull\b|back|row|bicep|lat|pulldown|pullover/i, tag: "Pull" },
-  { re: /\bshoulder|delt/i, tag: "Shoulders" },
-  { re: /\barm\b/i, tag: "Arms" },
-  { re: /\bcore|ab\b|abs\b/i, tag: "Core" },
-  { re: /\bglute/i, tag: "Glutes" },
-];
+function prettyPrimaryLabel(m: PrimaryMuscleGroup): string {
+  if (m === "other") return "Other";
+  return m.charAt(0).toUpperCase() + m.slice(1);
+}
 
 /**
- * Infers high-level focus tags from session titles and exercise list + optional catalog muscleGroup.
+ * Last-worked tags from canonical exercise metadata (exerciseId → catalog, else normalizedName).
+ * No name/regex muscle guessing.
  */
 function inferLastWorkedMuscleGroups(
   recentSessions: WorkoutSession[],
-  nameToMuscle: Map<string, string | undefined>,
+  catalog: Exercise[],
 ): string[] {
+  const lookup = buildCatalogLookup(catalog);
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (t: string) => {
@@ -41,21 +42,13 @@ function inferLastWorkedMuscleGroups(
   };
 
   for (const s of recentSessions.slice(0, 3)) {
-    const t = s.title;
-    for (const { re, tag } of TITLE_TOKENS) {
-      if (re.test(t) || s.exercises.some((e) => re.test(e.name))) {
-        add(tag);
-      }
-    }
     for (const ex of s.exercises) {
-      const k = normalizeExerciseName(ex.name);
-      const m = k ? nameToMuscle.get(k) : undefined;
-      if (m && m.trim()) {
-        const label = m.trim();
-        const pretty =
-          label.charAt(0).toUpperCase() + label.slice(1).toLowerCase();
-        add(pretty);
+      const row = resolveWorkoutExerciseToCatalogExercise(ex, lookup);
+      if (!row) {
+        add("unknownExercise");
+        continue;
       }
+      add(prettyPrimaryLabel(row.primaryMuscle));
     }
   }
 
@@ -88,17 +81,6 @@ function fatigueFrom(
   if (totalSets < 16) return "low";
   if (totalSets >= 16 && totalSets <= 25) return "moderate";
   return "low";
-}
-
-function buildNameToMuscle(
-  catalog: Pick<Exercise, "name" | "muscleGroup">[],
-): Map<string, string | undefined> {
-  const m = new Map<string, string | undefined>();
-  for (const e of catalog) {
-    const k = normalizeExerciseName(e.name);
-    if (k) m.set(k, e.muscleGroup);
-  }
-  return m;
 }
 
 /**
@@ -237,16 +219,15 @@ export function buildAiTrainingContext(
  */
 export function computeTrainingSignals(
   rows: WorkoutSession[],
-  catalog: Pick<Exercise, "name" | "muscleGroup">[],
+  catalog: Exercise[],
 ): TrainingSignals {
-  const nameToMuscle = buildNameToMuscle(catalog);
   const recentSplitPattern = rows
     .slice(0, 5)
     .map((s) => s.title.trim() || "Workout");
 
   const lastWorkedMuscleGroups = inferLastWorkedMuscleGroups(
     rows,
-    nameToMuscle,
+    catalog,
   );
   const volumeTrend = volumeTrendFromRows(rows);
   const hasData = rows.length >= 1;

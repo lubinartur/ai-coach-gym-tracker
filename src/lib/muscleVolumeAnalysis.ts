@@ -1,14 +1,12 @@
 import { getCalendarDateInTimezone } from "@/lib/dates";
 import { normalizeExerciseName } from "@/lib/exerciseName";
-import {
-  getExerciseMuscleGroup,
-  mapCatalogMuscleToPrimary,
-  PRIMARY_MUSCLE_GROUPS,
-  type PrimaryMuscleGroup,
-} from "@/lib/exerciseMuscleGroup";
-import { workingSetsOnly } from "@/lib/exerciseWorkingSets";
+import { PRIMARY_MUSCLE_GROUPS, type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import type { MuscleVolumeHistoryEntry, VolumeTrend } from "@/types/aiCoach";
 import type { Exercise, WorkoutSession } from "@/types/trainingDiary";
+import {
+  buildCanonicalMuscleVolumeAnalytics,
+  DEFAULT_ATTRIBUTION_RULE,
+} from "@/lib/analytics/muscleVolume";
 
 /**
  * Evidence-based weekly working-set ranges (hypertrophy) for the AI; not medical advice.
@@ -45,17 +43,6 @@ function emptyMuscleRecord(): Record<PrimaryMuscleGroup, number> {
   return o;
 }
 
-function addCalendarDays(ymd: string, days: number, timeZone: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
-  if (!m) return ymd;
-  const y = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  const base = new Date(Date.UTC(y, month - 1, day, 12, 0, 0));
-  base.setUTCDate(base.getUTCDate() + days);
-  return getCalendarDateInTimezone(base, timeZone);
-}
-
 function compareYmd(a: string, b: string): number {
   if (a === b) return 0;
   return a < b ? -1 : 1;
@@ -82,7 +69,8 @@ export function buildCatalogLookup(catalog: Exercise[]): CatalogLookup {
   const byNormName = new Map<string, Exercise | undefined>();
   for (const e of catalog) {
     byId.set(e.id, e);
-    const k = normalizeExerciseName(e.name);
+    const k =
+      (e.normalizedName && e.normalizedName.trim()) || normalizeExerciseName(e.name);
     if (k && !byNormName.has(k)) byNormName.set(k, e);
   }
   return { byId, byNormName };
@@ -92,20 +80,13 @@ export function resolvePrimaryMuscle(
   ex: WorkoutSession["exercises"][0],
   lookup: CatalogLookup,
 ): PrimaryMuscleGroup {
-  const exRow = ex.exerciseId
-    ? lookup.byId.get(ex.exerciseId)
-    : undefined;
-  const fromId = exRow?.muscleGroup
-    ? mapCatalogMuscleToPrimary(exRow.muscleGroup)
-    : null;
-  if (fromId) return fromId;
+  const exRow = ex.exerciseId ? lookup.byId.get(ex.exerciseId) : undefined;
+  if (exRow?.primaryMuscle) return exRow.primaryMuscle;
 
   const byName = lookup.byNormName.get(normalizeExerciseName(ex.name));
-  if (byName?.muscleGroup) {
-    const p = mapCatalogMuscleToPrimary(byName.muscleGroup);
-    if (p) return p;
-  }
-  return getExerciseMuscleGroup(ex.name);
+  if (byName?.primaryMuscle) return byName.primaryMuscle;
+
+  return "other";
 }
 
 function trendForWindow(cur: number, prev: number): VolumeTrend {
@@ -117,38 +98,10 @@ function trendForWindow(cur: number, prev: number): VolumeTrend {
   return diff > 0 ? "up" : "down";
 }
 
-function addSessionToMap(
-  s: WorkoutSession,
-  target: Record<PrimaryMuscleGroup, number>,
-  lookup: CatalogLookup,
-): void {
-  for (const ex of s.exercises) {
-    const muscle = resolvePrimaryMuscle(ex, lookup);
-    const working = workingSetsOnly(
-      ex.sets.map((st) => ({ weight: st.weight, reps: st.reps })),
-    );
-    target[muscle] += working.length;
-  }
-}
-
-/**
- * Sums working sets per primary muscle for sessions whose calendar `date` falls in [start, end] in `timeZone`.
- */
-export function sumWorkingSetsByMuscleInRange(
-  sessions: WorkoutSession[],
-  timeZone: string,
-  startInclusive: string,
-  endInclusive: string,
-  catalog: Exercise[],
-): Record<PrimaryMuscleGroup, number> {
-  const lookup = buildCatalogLookup(catalog);
-  const out = emptyMuscleRecord();
-  for (const s of sessions) {
-    if (!s.date || !inDateRange(s.date, startInclusive, endInclusive)) continue;
-    addSessionToMap(s, out, lookup);
-  }
-  return out;
-}
+// Note: `sumWorkingSetsByMuscleInRange` was replaced by the canonical analytics engine
+// (`buildCanonicalMuscleVolumeAnalytics`). Keep `resolvePrimaryMuscle` and
+// `buildCatalogLookup` for call sites (recovery scoring), but prefer the canonical
+// engine for weekly/history analytics.
 
 const HISTORY_BUCKETS = 4;
 
@@ -166,45 +119,27 @@ export function buildMuscleVolumeAnalysisForPayload(
   timeZone: string,
   catalog: Exercise[],
 ): AiCoachMuscleVolumeBlock {
-  const today = getCalendarDateInTimezone(new Date(), timeZone);
-  const currentStart = addCalendarDays(today, -6, timeZone);
-  const currentEnd = today;
-  const prevStart = addCalendarDays(today, -13, timeZone);
-  const prevEnd = addCalendarDays(today, -7, timeZone);
+  const analytics = buildCanonicalMuscleVolumeAnalytics({
+    sessions,
+    catalog,
+    timeZone,
+    historyBuckets: HISTORY_BUCKETS,
+    attributionRule: DEFAULT_ATTRIBUTION_RULE,
+  });
 
-  const weekly = sumWorkingSetsByMuscleInRange(
-    sessions,
-    timeZone,
-    currentStart,
-    currentEnd,
-    catalog,
-  );
-  const previousWeek = sumWorkingSetsByMuscleInRange(
-    sessions,
-    timeZone,
-    prevStart,
-    prevEnd,
-    catalog,
-  );
+  const weekly = analytics.current.workingSetsByMuscle;
+  const previousWeek = analytics.previous.workingSetsByMuscle;
 
   const muscleVolumeTrend: Record<PrimaryMuscleGroup, VolumeTrend> = { ...UNKNOWN_TRENDS };
   for (const m of PRIMARY_MUSCLE_GROUPS) {
     muscleVolumeTrend[m] = trendForWindow(weekly[m] ?? 0, previousWeek[m] ?? 0);
   }
 
-  const muscleVolumeHistory: MuscleVolumeHistoryEntry[] = [];
-  for (let i = HISTORY_BUCKETS - 1; i >= 0; i -= 1) {
-    const end = addCalendarDays(today, -7 * i, timeZone);
-    const start = addCalendarDays(end, -6, timeZone);
-    const setsByMuscle = sumWorkingSetsByMuscleInRange(
-      sessions,
-      timeZone,
-      start,
-      end,
-      catalog,
-    );
-    muscleVolumeHistory.push({ periodStart: start, periodEnd: end, setsByMuscle });
-  }
+  const muscleVolumeHistory: MuscleVolumeHistoryEntry[] = analytics.history.map((h) => ({
+    periodStart: h.startInclusive,
+    periodEnd: h.endInclusive,
+    setsByMuscle: h.workingSetsByMuscle,
+  }));
 
   return {
     weeklyMuscleVolume: weekly,
