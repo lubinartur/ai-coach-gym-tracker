@@ -1,4 +1,3 @@
-import { getCalendarDateInTimezone } from "@/lib/dates";
 import { normalizeExerciseName } from "@/lib/exerciseName";
 import { PRIMARY_MUSCLE_GROUPS, type PrimaryMuscleGroup } from "@/lib/exerciseMuscleGroup";
 import type { MuscleVolumeHistoryEntry, VolumeTrend } from "@/types/aiCoach";
@@ -41,22 +40,6 @@ function emptyMuscleRecord(): Record<PrimaryMuscleGroup, number> {
   const o = {} as Record<PrimaryMuscleGroup, number>;
   for (const m of PRIMARY_MUSCLE_GROUPS) o[m] = 0;
   return o;
-}
-
-function compareYmd(a: string, b: string): number {
-  if (a === b) return 0;
-  return a < b ? -1 : 1;
-}
-
-function inDateRange(
-  sessionDate: string,
-  startInclusive: string,
-  endInclusive: string,
-): boolean {
-  return (
-    compareYmd(sessionDate, startInclusive) >= 0 &&
-    compareYmd(sessionDate, endInclusive) <= 0
-  );
 }
 
 export type CatalogLookup = {

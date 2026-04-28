@@ -50,7 +50,9 @@ export function AiTracesDevView() {
   }, []);
 
   useEffect(() => {
-    void load();
+    queueMicrotask(() => {
+      void load();
+    });
   }, [load]);
 
   const onClear = async () => {

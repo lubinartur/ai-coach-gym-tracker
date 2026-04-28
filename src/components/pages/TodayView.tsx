@@ -4,6 +4,7 @@ import { ActionCard } from "@/components/ActionCard";
 import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { useTodayPlan } from "@/hooks/useTodayPlan";
+import { useI18n } from "@/i18n/LocaleContext";
 
 function formatHeaderDate(isoDate: string): string {
   if (!isoDate) return "";
@@ -17,6 +18,7 @@ function formatHeaderDate(isoDate: string): string {
 }
 
 export function TodayView() {
+  const { t } = useI18n();
   const { date, plan, actions, loading, generating, error, generate } =
     useTodayPlan();
 
@@ -24,13 +26,13 @@ export function TodayView() {
     <main className="mx-auto flex w-full min-w-0 max-w-full flex-col space-y-6 pb-32">
       <header className="space-y-1">
         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          Life Execution Panel
+          {t("life_panel_brand")}
         </p>
         <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
-          Today
+          {t("today")}
         </h1>
         <p className="text-sm text-neutral-500">
-          {loading ? "Loading calendar…" : formatHeaderDate(date)}
+          {loading ? t("today_loading_calendar") : formatHeaderDate(date)}
         </p>
       </header>
 
@@ -46,20 +48,19 @@ export function TodayView() {
           disabled={loading || generating}
           className="!min-h-[52px]"
         >
-          {generating ? "Generating…" : "Generate today plan"}
+          {generating ? t("generating") : t("today_generate_plan")}
         </Button>
         <p className="text-xs text-neutral-500">
-          Plan → do → log → learn → next plan. History informs the next generation
-          once the server model is connected.
+          {t("today_hint")}
         </p>
       </section>
 
       {loading ? (
-        <p className="text-sm text-neutral-500">Loading today&apos;s panel…</p>
+        <p className="text-sm text-neutral-500">{t("today_loading_panel")}</p>
       ) : !plan || actions.length === 0 ? (
         <EmptyState
-          title="No plan for today"
-          body="Generate a plan to see concrete execution blocks. Each block is meant to be run, not checked off."
+          title={t("today_empty_title")}
+          body={t("today_empty_body")}
         />
       ) : (
         <section className="flex flex-col gap-4">

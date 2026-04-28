@@ -21,5 +21,20 @@ export function bumpRepsValue(reps: number, delta: number): number {
 }
 
 export function setVolumeFor(weight: number, reps: number): number {
-  return Math.max(0, weight || 0) * Math.max(0, reps || 0);
+  return setVolumeForWithMultiplier(weight, reps, 1);
+}
+
+/**
+ * Canonical set volume.
+ * `weight` is always the value the user entered (e.g. per-dumbbell for DB lifts).
+ */
+export function setVolumeForWithMultiplier(
+  weight: number,
+  reps: number,
+  multiplier: number,
+): number {
+  const w = Math.max(0, weight || 0);
+  const r = Math.max(0, reps || 0);
+  const m = Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1;
+  return w * r * m;
 }

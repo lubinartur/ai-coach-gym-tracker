@@ -1,21 +1,22 @@
 import Link from "next/link";
 import type { Action } from "@/types";
 import { Card } from "./ui/Card";
-
-function statusLabel(s: Action["status"]): string {
-  switch (s) {
-    case "planned":
-      return "Planned";
-    case "done":
-      return "Done";
-    case "partial":
-      return "Partial";
-    case "skipped":
-      return "Skipped";
-  }
-}
+import { useI18n } from "@/i18n/LocaleContext";
 
 export function ActionCard({ action }: { action: Action }) {
+  const { t } = useI18n();
+  const statusLabel = (s: Action["status"]): string => {
+    switch (s) {
+      case "planned":
+        return t("action_planned");
+      case "done":
+        return t("action_done");
+      case "partial":
+        return t("action_partial");
+      case "skipped":
+        return t("action_skipped");
+    }
+  };
   const preview =
     action.type === "workout" && action.executionItems?.length
       ? action.executionItems.slice(0, 5)
@@ -55,14 +56,14 @@ export function ActionCard({ action }: { action: Action }) {
             ))}
             {action.executionItems.length > preview.length ? (
               <li className="text-xs text-neutral-500 dark:text-neutral-500">
-                +{action.executionItems.length - preview.length} more…
+                +{action.executionItems.length - preview.length} {t("more_ellipsis")}
               </li>
             ) : null}
           </ul>
         ) : null}
 
         <span className="flex min-h-[52px] w-full items-center justify-center rounded-lg bg-neutral-900 text-base font-semibold text-white dark:bg-neutral-100 dark:text-neutral-900">
-          Open execution block
+          {t("action_open_execution_block")}
         </span>
       </Card>
     </Link>

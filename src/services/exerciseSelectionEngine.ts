@@ -8,6 +8,7 @@ import { buildEngineRuntimeContext } from "@/services/buildEngineRuntimeContext"
 import type { EngineRuntimeContext } from "@/types/engineRuntimeContext";
 import { addTrace } from "@/services/decisionTrace";
 import { getExerciseMetadata } from "@/data/exerciseMetadata";
+import { nameSpecificityPenalty, tierSelectionScore } from "@/lib/exerciseTier";
 
 export type ExerciseSelectionConstraints = {
   /** If set, only exercises with equipment in this set (or unknown equipment) are allowed. */
@@ -234,12 +235,27 @@ function movementPatternKeyForSelection(
   return null;
 }
 
+function familyKeyForSlot(exerciseName: string, role: SkeletonSlot): string | null {
+  const n = (normalizeExerciseName(exerciseName) || "").toLowerCase();
+  if (!n) return null;
+  if (role === "biceps") {
+    if (/\bhammer curl\b/.test(n)) return "biceps_hammer_curl";
+    if (/\bincline dumbbell curl\b/.test(n)) return "biceps_incline_dumbbell_curl";
+    if (/\bbarbell curl\b/.test(n) || /\bez bar curl\b/.test(n) || /\bez curl\b/.test(n)) return "biceps_barbell_curl";
+    if (/\bcable curl\b/.test(n)) return "biceps_cable_curl";
+    if (/\bdumbbell curl\b/.test(n)) return "biceps_dumbbell_curl";
+    if (/\bcurl\b/.test(n)) return "biceps_curl_other";
+  }
+  return null;
+}
+
 function scoreCandidate(input: {
   runtime: EngineRuntimeContext;
   constraints: ExerciseSelectionConstraints;
   slot: SlotPlanItem;
   ex: Exercise;
   usedNorm: Set<string>;
+  usedFamily: Set<string>;
   recentNorm: Set<string>;
   substitutionBoosts?: Map<string, { delta: number; reasonCodes: string[] }>;
   selectedMovementPatternsTier12?: Set<string>;
@@ -249,6 +265,7 @@ function scoreCandidate(input: {
     slot,
     ex,
     usedNorm,
+    usedFamily,
     recentNorm,
     substitutionBoosts,
     selectedMovementPatternsTier12,
@@ -257,6 +274,14 @@ function scoreCandidate(input: {
   const recovery = runtime.recovery;
   const reasonCodes: string[] = [];
   let score = 0;
+
+  // Base exercise tier (prefer standard gym movements; avoid niche variants).
+  const tier = tierSelectionScore(ex.name);
+  score += tier.score;
+  reasonCodes.push(tier.reason);
+  const spec = nameSpecificityPenalty(ex.name);
+  if (spec.score) score += spec.score;
+  reasonCodes.push(...spec.reasonCodes);
 
   const meta = getExerciseMetadata(ex.name);
   if (meta) {
@@ -336,6 +361,13 @@ function scoreCandidate(input: {
   if (exNorm && usedNorm.has(exNorm)) {
     score -= 200;
     reasonCodes.push("duplicate_in_workout");
+  }
+
+  // Avoid near-duplicates (e.g. Hammer Curl + Hammer Curl variation).
+  const fam = familyKeyForSlot(ex.name, slot.role);
+  if (fam && usedFamily.has(fam)) {
+    score -= 140;
+    reasonCodes.push("duplicate_family");
   }
   const rotationPenalty =
     exNorm && recentNorm.has(exNorm) ? (slot.tier === 1 ? 55 : 18) : 0;
@@ -500,6 +532,7 @@ export function selectWorkoutStructure(input: {
   const plan = slotPlanFor(split);
 
   const usedNorm = new Set<string>();
+  const usedFamily = new Set<string>();
   const rotationWindow = Math.max(0, Math.floor(constraints.rotationWindowSessions ?? 2));
   const recentNorm = normSetFromRecentWorkouts(runtime.decision, rotationWindow);
 
@@ -579,6 +612,7 @@ export function selectWorkoutStructure(input: {
           slot,
           ex,
           usedNorm,
+          usedFamily,
           recentNorm,
           substitutionBoosts,
           selectedMovementPatternsTier12,
@@ -626,6 +660,8 @@ export function selectWorkoutStructure(input: {
     if (chosen) {
       const k = normalizeExerciseName(chosen.ex.name);
       if (k) usedNorm.add(k);
+      const fam = familyKeyForSlot(chosen.ex.name, slot.role);
+      if (fam) usedFamily.add(fam);
       if (slot.tier === 1 || slot.tier === 2) {
         const mp = movementPatternKeyForSelection(chosen.ex.name, slot.role);
         if (mp) selectedMovementPatternsTier12.add(mp);
@@ -685,6 +721,8 @@ export function selectWorkoutStructure(input: {
     if (fallbackPicked) {
       const k = normalizeExerciseName(fallbackPicked.name);
       if (k) usedNorm.add(k);
+      const fam = familyKeyForSlot(fallbackPicked.name, slot.role);
+      if (fam) usedFamily.add(fam);
       if (slot.tier === 1 || slot.tier === 2) {
         const mp = movementPatternKeyForSelection(fallbackPicked.name, slot.role);
         if (mp) selectedMovementPatternsTier12.add(mp);
@@ -695,6 +733,7 @@ export function selectWorkoutStructure(input: {
         slot,
         ex: fallbackPicked,
         usedNorm: new Set<string>(), // avoid "duplicate_in_workout" for fallback (we already enforced)
+        usedFamily: new Set<string>(),
         recentNorm,
         substitutionBoosts: undefined,
         selectedMovementPatternsTier12,

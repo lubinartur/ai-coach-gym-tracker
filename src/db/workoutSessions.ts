@@ -5,6 +5,7 @@ import { getWorkoutChronologyTime } from "@/lib/workoutChronology";
 import { getOrCreateExerciseByName } from "@/db/exercises";
 import type { WorkoutAiReview } from "@/types/aiCoach";
 import type { WorkoutSession } from "@/types/trainingDiary";
+import { setVolumeForWithMultiplier } from "@/lib/workoutSetQuick";
 
 export async function listWorkoutSessions(): Promise<WorkoutSession[]> {
   const rows = await db.workoutSessions.toArray();
@@ -32,9 +33,14 @@ export async function saveWorkoutSessionDraft(input: {
   const now = new Date().toISOString();
   const exercises = await Promise.all(
     input.exercises.map(async (ex) => {
-      const resolvedId =
-        ex.exerciseId?.trim() ||
-        (await getOrCreateExerciseByName(ex.name, { ensureEnriched: true })).id;
+      const exId = ex.exerciseId?.trim();
+      const row = exId
+        ? await db.exercises.get(exId)
+        : await getOrCreateExerciseByName(ex.name, { ensureEnriched: true });
+      const resolvedId = row?.id ?? exId ?? (await getOrCreateExerciseByName(ex.name, { ensureEnriched: true })).id;
+      const isDumbbell =
+        Array.isArray(row?.equipmentTags) && row!.equipmentTags.includes("dumbbell");
+      const mult = isDumbbell ? 2 : 1;
       return {
         ...ex,
         exerciseId: resolvedId,
@@ -42,7 +48,7 @@ export async function saveWorkoutSessionDraft(input: {
         name: ex.name,
         sets: ex.sets.map((s) => ({
           ...s,
-          volume: Math.max(0, s.weight) * Math.max(0, s.reps),
+          volume: setVolumeForWithMultiplier(s.weight, s.reps, mult),
         })),
       };
     }),

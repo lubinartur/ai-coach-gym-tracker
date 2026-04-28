@@ -102,7 +102,7 @@ export function buildStrengthSeries(input: {
   for (const s of sessions) {
     if (!s?.id || !s.date) continue;
 
-    let best: (StrengthSeriesPoint & { _est: number }) | null = null;
+    let best: StrengthSeriesPoint | null = null;
 
     for (const ex of s.exercises ?? []) {
       const row = resolveCatalogExercise(ex, lookup);
@@ -129,7 +129,7 @@ export function buildStrengthSeries(input: {
       const resolvedExerciseId = (row?.id ?? ex.exerciseId?.trim()) || undefined;
       const exerciseName = (row?.name && row.name.trim()) || ex.name || "Exercise";
 
-      const cand: StrengthSeriesPoint & { _est: number } = {
+      const cand: StrengthSeriesPoint = {
         date: s.date,
         sessionId: s.id,
         exerciseId: resolvedExerciseId,
@@ -137,14 +137,12 @@ export function buildStrengthSeries(input: {
         estimated1RM: est.estimated1RM,
         formula: est.formula,
         sourceSet: { ...est.source },
-        _est: est.estimated1RM,
       };
-      if (!best || cand._est > best._est) best = cand;
+      if (!best || cand.estimated1RM > best.estimated1RM) best = cand;
     }
 
     if (best) {
-      const { _est, ...out } = best;
-      points.push(out);
+      points.push(best);
     }
   }
 

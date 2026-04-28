@@ -26,7 +26,8 @@ export async function POST(req: Request) {
   const raw = body as WorkoutReviewRequestPayload;
   const payload: WorkoutReviewRequestPayload = {
     ...raw,
-    language: parseAppLanguage(raw.language),
+    locale: parseAppLanguage(raw.locale),
+    language: parseAppLanguage(raw.locale ?? raw.language),
   };
 
   const result = await fetchWorkoutReviewFromOpenAI(payload, apiKey);

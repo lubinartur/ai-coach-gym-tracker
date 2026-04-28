@@ -2,24 +2,63 @@
 
 /* Design tokens: calm dark base (gym / Strong / Hevy style) */
 :root {
-  --background: #0a0a0a; /* ~ neutral-950 */
-  --foreground: #fafafa;
+  --background: #0f0f0f;
+  --card: #1a1a1a;
+  --card-active: #222222;
+  --border: #2a2a2a;
+  --accent: #a855f7;
+  --accent-hover: #c084fc;
+  --text: #ffffff;
+  --text-secondary: #d4d4d4;
+  --text-meta: #9ca3af;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
 }
 
 @theme inline {
   --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-primary: #9333ea;
+  --color-foreground: var(--text);
+  --color-primary: var(--accent);
 }
 
 body {
-  background-color: #0a0a0a;
-  color: var(--foreground);
+  background-color: var(--background);
+  color: var(--text);
   font-family:
     system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.5;
 }
 
 html,
 body {
-  background-color: #050505;
+  background-color: var(--background);
+}
+
+@keyframes insight-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.insight-pop {
+  animation: insight-pop 180ms ease-out;
+}
+
+@keyframes insight-glow {
+  from {
+    box-shadow: 0 10px 30px -18px rgba(168, 85, 247, 0.65);
+  }
+  to {
+    box-shadow: 0 10px 30px -18px rgba(168, 85, 247, 0.35);
+  }
+}
+
+.insight-glow {
+  animation: insight-glow 260ms ease-out;
 }

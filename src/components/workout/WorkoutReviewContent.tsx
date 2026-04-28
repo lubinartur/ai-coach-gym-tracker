@@ -88,6 +88,19 @@ function buildWarningsList(r: WorkoutAiReview): string[] {
   return r.needs_attention;
 }
 
+function splitCoachLine(line: string): { title: string; body?: string } {
+  const s = (line ?? "").trim();
+  if (!s) return { title: "" };
+  // Prefer splitting on the first sentence boundary for a “headline + detail” feel.
+  const m = s.match(/^(.{6,80}?)[.:!?]\s+(.*)$/);
+  if (m) {
+    const title = (m[1] ?? "").trim();
+    const body = (m[2] ?? "").trim();
+    if (title && body) return { title, body };
+  }
+  return { title: s };
+}
+
 type T = (k: MessageKey) => string;
 
 function fatigueKey(f: AiTrainingSignalsResponse["fatigue"]): MessageKey {
@@ -255,21 +268,22 @@ export function WorkoutReviewContent(props: Props) {
                 {buildInsightsList(displayReview).map((ins, i) => {
                   const tone = insightToneFromType(ins.type);
                   const isSyntheticTitle = ins.title === "·";
+                  const displayLine = isSyntheticTitle ? ins.text : `${ins.title}. ${ins.text}`.trim();
+                  const { title, body } = splitCoachLine(displayLine);
                   return (
                     <li key={`ins-${i}`}>
                       <InsightCard
                         compact
                         tone={tone}
-                        title={
-                          isSyntheticTitle ? (
-                            <span className="text-emerald-400/90" aria-hidden>
-                              ·
-                            </span>
-                          ) : (
-                            ins.title
-                          )
-                        }
-                        body={ins.text}
+                        indicator="✓"
+                        indicatorClassName="text-emerald-400"
+                        title={title}
+                        body={body}
+                        wrap
+                        clampBodyLines={3}
+                        expandable
+                        showMoreLabel={t("show_more")}
+                        showLessLabel={t("show_less")}
                       />
                     </li>
                   );
@@ -281,18 +295,28 @@ export function WorkoutReviewContent(props: Props) {
           {buildWarningsList(displayReview).length > 0 ? (
             <section className="space-y-2" aria-label={t("review_section_what_to_adjust")}>
               <SectionHeader title={t("review_section_what_to_adjust")} />
-              <Card className="border-amber-500/25 bg-amber-500/[0.04] !p-4">
-                <ul className="list-none space-y-2.5 text-sm leading-relaxed text-amber-100/90">
-                  {buildWarningsList(displayReview).map((line, i) => (
-                    <li key={`w-${i}`} className="flex gap-2">
-                      <span className="shrink-0 text-amber-500/80" aria-hidden>
-                        ·
-                      </span>
-                      <span className="min-w-0">{line}</span>
+              <ul className="space-y-2">
+                {buildWarningsList(displayReview).map((line, i) => {
+                  const { title, body } = splitCoachLine(line);
+                  return (
+                    <li key={`w-${i}`}>
+                      <InsightCard
+                        compact
+                        tone="warning"
+                        indicator="⚠"
+                        indicatorClassName="text-amber-400"
+                        title={title}
+                        body={body}
+                        wrap
+                        clampBodyLines={3}
+                        expandable
+                        showMoreLabel={t("show_more")}
+                        showLessLabel={t("show_less")}
+                      />
                     </li>
-                  ))}
-                </ul>
-              </Card>
+                  );
+                })}
+              </ul>
             </section>
           ) : null}
 
@@ -305,15 +329,27 @@ export function WorkoutReviewContent(props: Props) {
           {displayReview.next_time.length > 0 ? (
             <section className="space-y-2">
               <SectionHeader title={t("review_next_session")} />
-              <ul className="list-none space-y-2 text-sm leading-relaxed text-neutral-200">
-                {displayReview.next_time.map((line, i) => (
-                  <li key={`n-${i}`} className="flex gap-2">
-                    <span className="shrink-0 text-violet-500/70" aria-hidden>
-                      ·
-                    </span>
-                    <span className="min-w-0">{line}</span>
-                  </li>
-                ))}
+              <ul className="space-y-2">
+                {displayReview.next_time.map((line, i) => {
+                  const { title, body } = splitCoachLine(line);
+                  return (
+                    <li key={`n-${i}`}>
+                      <InsightCard
+                        compact
+                        tone="violet"
+                        indicator="➜"
+                        indicatorClassName="text-purple-300"
+                        title={title}
+                        body={body}
+                        wrap
+                        clampBodyLines={3}
+                        expandable
+                        showMoreLabel={t("show_more")}
+                        showLessLabel={t("show_less")}
+                      />
+                    </li>
+                  );
+                })}
               </ul>
             </section>
           ) : null}

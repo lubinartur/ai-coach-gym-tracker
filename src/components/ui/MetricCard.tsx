@@ -14,14 +14,14 @@ export function MetricCard({ label, value, hint, right, className = "" }: Props)
     <Card className={"!p-5 " + className}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[#9CA3AF]">
             {label}
           </p>
-          <p className="mt-1 text-2xl font-semibold tabular-nums leading-tight text-neutral-50">
+          <p className="mt-1 text-2xl font-bold tabular-nums leading-tight text-[#FFFFFF]">
             {value}
           </p>
           {hint ? (
-            <p className="mt-1 text-sm leading-snug text-neutral-400">{hint}</p>
+            <p className="mt-1 text-sm leading-snug text-[#9CA3AF]">{hint}</p>
           ) : null}
         </div>
         {right ? <div className="shrink-0">{right}</div> : null}

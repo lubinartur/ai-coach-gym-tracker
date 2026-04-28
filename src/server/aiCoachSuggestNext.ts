@@ -62,6 +62,7 @@ import {
   exerciseMetadataMatchesWorkoutSplit,
   resolveCatalogRowByExerciseName,
 } from "@/services/exerciseCatalogResolve";
+import { nameSpecificityPenalty, tierSelectionScore } from "@/lib/exerciseTier";
 
 const SESSION_TYPES = [
   "Normal progression",
@@ -250,10 +251,10 @@ function scoreTemplateMatch(input: { target: Set<string>; tpl: { muscleLine: str
 
 function desiredExerciseCount(durationMin: number): number {
   if (!Number.isFinite(durationMin) || durationMin <= 0) return 6;
-  if (durationMin <= 30) return 4;
+  if (durationMin <= 30) return 4; // 3–4, but keep stable at 4 for simplicity
   if (durationMin <= 45) return 5;
   if (durationMin <= 60) return 6;
-  return 7;
+  return 6;
 }
 
 function buildCustomSelectedStructure(payload: AiCoachRequestPayload): {
@@ -265,18 +266,137 @@ function buildCustomSelectedStructure(payload: AiCoachRequestPayload): {
   const target = new Set(req.targetMuscles.map(normMuscleId).filter(Boolean));
   if (!target.size) return null;
 
-  // Deterministically choose the best-matching quick template so the target muscles stay on-target.
-  const best = (payload.quickTemplates ?? [])
-    .map((t) => ({ t, score: scoreTemplateMatch({ target, tpl: t }) }))
-    .sort((a, b) => b.score - a.score)[0];
-  const chosen = best?.t ?? payload.quickTemplates?.[0];
-  if (!chosen) return null;
+  const catalog: Exercise[] =
+    Array.isArray(payload.exerciseCatalog) && payload.exerciseCatalog.length
+      ? dedupeExerciseCatalogByNormalizedName(payload.exerciseCatalog)
+      : buildLegacyMixedCatalog(payload);
 
-  const wantN = desiredExerciseCount(req.durationMin);
-  const names = chosen.exercises.slice(
-    0,
-    Math.max(3, Math.min(wantN, chosen.exercises.length)),
-  );
+  const toPrimary = (m: string): PrimaryMuscleGroup | null => {
+    if (m === "shoulders" || m === "delts" || m === "shoulder") return "shoulders";
+    if (m === "biceps" || m === "bicep") return "biceps";
+    if (m === "triceps" || m === "tricep") return "triceps";
+    if (m === "chest") return "chest";
+    if (m === "back") return "back";
+    if (m === "legs" || m === "quads" || m === "glutes") return "legs";
+    if (m === "hamstrings") return "hamstrings";
+    if (m === "calves") return "calves";
+    if (m === "core" || m === "abs") return "core";
+    return null;
+  };
+
+  const targetPrimary = [...target].map(toPrimary).filter(Boolean) as PrimaryMuscleGroup[];
+  if (!targetPrimary.length) return null;
+
+  const focus = req.focus ?? "hypertrophy";
+  const wantN = Math.max(3, Math.min(6, desiredExerciseCount(req.durationMin)));
+
+  const scorePick = (ex: Exercise): number => {
+    let s = 0;
+    const compound = ex.isCompound === true;
+    if (focus === "strength") s += compound ? 3 : 0;
+    else if (focus === "pump") s += compound ? 0 : 2;
+    else s += compound ? 1 : 1;
+    // Prefer enriched catalog rows.
+    if (ex.source === "library") s += 1;
+    if (ex.source === "metadata") s += 0.5;
+    // Prefer explicit target muscle match.
+    if (targetPrimary.includes(ex.primaryMuscle)) s += 4;
+    // Tiering: base exercises should win by default.
+    const tier = tierSelectionScore(ex.name);
+    s += tier.tier === 1 ? 3 : tier.tier === 2 ? 1 : -4;
+    const spec = nameSpecificityPenalty(ex.name);
+    s += spec.score / 10;
+    return s;
+  };
+
+  const poolAll = catalog
+    .filter((ex) => targetPrimary.includes(ex.primaryMuscle))
+    .sort((a, b) => scorePick(b) - scorePick(a));
+
+  // Enforce “mostly Tier 1” when possible: fill from Tier 1 first, then Tier 2.
+  const poolTier1 = poolAll.filter((ex) => tierSelectionScore(ex.name).tier === 1);
+  const poolTier2 = poolAll.filter((ex) => tierSelectionScore(ex.name).tier === 2);
+  const pool = [...poolTier1, ...poolTier2];
+
+  // If a single muscle is targeted, keep it clean: do not drift into secondary muscles.
+  // Exception: biceps allows at most one compound pull IF we can't fill enough curls.
+  const primaryTarget = targetPrimary[0]!;
+  const names: string[] = [];
+  const seenNorm = new Set<string>();
+  const seenFamily = new Set<string>();
+
+  const familyKey = (name: string): string | null => {
+    const n = (normalizeExerciseName(name) || "").toLowerCase();
+    if (!n) return null;
+    if (primaryTarget === "biceps") {
+      if (/\bhammer curl\b/.test(n)) return "biceps_hammer_curl";
+      if (/\bincline dumbbell curl\b/.test(n)) return "biceps_incline_dumbbell_curl";
+      if (/\bbarbell curl\b/.test(n) || /\bez bar curl\b/.test(n) || /\bez curl\b/.test(n)) return "biceps_barbell_curl";
+      if (/\bcable curl\b/.test(n)) return "biceps_cable_curl";
+      if (/\bdumbbell curl\b/.test(n)) return "biceps_dumbbell_curl";
+      if (/\bcurl\b/.test(n)) return "biceps_curl_other";
+    }
+    return null;
+  };
+
+  const pushName = (n: string) => {
+    const k = normalizeExerciseName(n);
+    if (!k || seenNorm.has(k)) return false;
+    const fam = familyKey(n);
+    if (fam && seenFamily.has(fam)) return false;
+    seenNorm.add(k);
+    if (fam) seenFamily.add(fam);
+    names.push(n);
+    return true;
+  };
+
+  // Special-case: single-muscle biceps pump 30m should be a clean curls-only list.
+  if (primaryTarget === "biceps" && focus === "pump" && req.durationMin <= 30) {
+    const preferred = [
+      "Barbell Curl",
+      "Dumbbell Curl",
+      "Hammer Curl",
+      "Cable Curl",
+    ];
+    for (const want of preferred) {
+      if (names.length >= wantN) break;
+      const pick = pool.find((ex) => normalizeExerciseName(ex.name) === normalizeExerciseName(want));
+      if (pick) pushName(pick.name);
+    }
+  }
+
+  for (const ex of pool) {
+    if (names.length >= wantN) break;
+    pushName(ex.name);
+  }
+
+  if (names.length < wantN && primaryTarget === "biceps") {
+    const backCompounds = catalog
+      .filter((ex) => ex.primaryMuscle === "back" && ex.isCompound === true)
+      .sort((a, b) => scorePick(b) - scorePick(a));
+    for (const ex of backCompounds) {
+      if (names.length >= wantN) break;
+      if (names.filter((x) => x).length >= wantN) break;
+      // only one compound pull
+      pushName(ex.name);
+      break;
+    }
+  }
+
+  // Absolute fallback: if catalog is missing tags, use best-matching template (legacy behavior).
+  if (names.length < Math.min(3, wantN)) {
+    const best = (payload.quickTemplates ?? [])
+      .map((t) => ({ t, score: scoreTemplateMatch({ target, tpl: t }) }))
+      .sort((a, b) => b.score - a.score)[0];
+    const chosen = best?.t ?? payload.quickTemplates?.[0];
+    if (chosen) {
+      const fill = chosen.exercises.slice(0, wantN);
+      for (const n of fill) {
+        if (names.length >= wantN) break;
+        pushName(n);
+      }
+    }
+  }
 
   // Minimal safe structure: keep the output shape stable. The LLM will program sets/reps/loads.
   const structure: SelectedWorkoutStructure = {
@@ -285,17 +405,17 @@ function buildCustomSelectedStructure(payload: AiCoachRequestPayload): {
       tier: (idx < 2 ? 1 : idx < 4 ? 2 : 3) as 1 | 2 | 3,
       role: "core",
       exercise,
-      primaryMuscle: "other",
+      primaryMuscle: targetPrimary[0] ?? "other",
       movementPattern: "isolation",
       selectionScore: 1,
-      reasonCodes: ["custom_target"],
+      reasonCodes: ["custom_target", `focus:${String(focus)}`],
     })),
     excluded: [],
   };
 
   return {
     structure,
-    warning: `Custom workout target applied: ${[...target].join(", ")}`,
+    warning: `Custom workout target applied: ${[...target].join(", ")} (focus: ${String(focus)}, duration: ${Math.round(req.durationMin)}m)`,
   };
 }
 
@@ -522,7 +642,20 @@ function buildExercisesFromStructureAndProgramming(input: {
     // Use the most conservative multiplier without double-applying (e.g. recovery deload + load deload).
     const setsMult = Math.min(deloadMult, lmVolMult);
     const minSets = baseSets === 1 ? 1 : 2;
-    const setsCount = Math.max(minSets, Math.min(12, Math.round(baseSets * setsMult)));
+    let setsCount = Math.max(minSets, Math.min(12, Math.round(baseSets * setsMult)));
+
+    // Custom single-muscle workouts should be consistent: 30min pump => 3 sets each.
+    const cwr = input.payload.customWorkoutRequest ?? null;
+    if (
+      cwr &&
+      Array.isArray(cwr.targetMuscles) &&
+      cwr.targetMuscles.length === 1 &&
+      Number.isFinite(cwr.durationMin) &&
+      cwr.durationMin <= 30 &&
+      cwr.focus === "pump"
+    ) {
+      setsCount = 3;
+    }
     const repsParsed = p ? parseFirstInt(p.reps) : null;
     const loadParsed = p ? parseLoadReps(p.load) : undefined;
 
@@ -1643,6 +1776,7 @@ export async function fetchSuggestNextWorkoutFromOpenAI(
 ${JSON.stringify({
   aiDecisionContext: promptPayload.aiDecisionContext,
   selectedStructure: promptPayload.selectedStructure,
+  customWorkoutRequest: payload.customWorkoutRequest ?? null,
   coachMemory: runtime.coachMemory ?? { exerciseMemories: {} },
   adaptation,
   loadManagement,

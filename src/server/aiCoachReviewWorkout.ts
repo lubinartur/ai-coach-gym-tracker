@@ -12,9 +12,9 @@ import { stripJsonFence } from "@/server/openaiPlanJson";
 const MODEL = "gpt-4.1-mini";
 const MAX_ATTEMPTS = 3;
 
-const systemPromptEn = `You are a human strength coach writing a quick debrief for someone who just finished a gym session in their tracker.
+const systemPromptEn = `You are an AI strength coach analyzing a completed workout.
 
-Be warm and direct, not like a lab report. Use short, simple sentences. Sound like a person, not a performance review.
+Keep responses concise and coach-like. Be warm and direct, not like a lab report. Use short, simple sentences.
 
 Do not invent medical, injury, or hormone details. Use only the workout data and optional profile in the JSON.
 
@@ -26,6 +26,26 @@ The JSON includes "language": "en". You MUST write verdict, summary, all bullet 
 - Rough bands: 90–100 = excellent; 80–89 = strong; 70–79 = good but needs attention; 60–69 = mixed; below 60 = poor or recovery/execution issue.
 - "grade" must be one of: A+, A, B+, B, C, D — and must **roughly** match the score (e.g. 84 with B+).
 - "verdict" is 1–2 **short, human** sentences: the main takeaway (quality, one caveat if any). It is the headline, not a repeat of every bullet.
+
+## Workout context
+The user JSON includes a workoutContext object. Read it from JSON:
+- workoutContext.mode
+- workoutContext.target_muscles
+- workoutContext.duration
+- workoutContext.sets
+- workoutContext.exercises
+
+## Rules
+If workoutContext.mode is SINGLE MUSCLE:
+Do NOT criticize missing other muscle groups.
+Do NOT suggest adding unrelated muscle groups.
+Instead evaluate:
+1. Volume (for the target muscle)
+2. Exercise selection (variety)
+3. Consistency (sets/reps stability)
+4. Training density (work done per time, if duration is reliable)
+
+Ensure the score matches the feedback.
 
 ## Duration (important)
 - If completedSession.durationMin is present and is **less than 5 minutes**, treat it as unreliable test/manual-entry data.
@@ -60,7 +80,7 @@ No markdown. JSON only. JSON keys in English; string values in English for user-
 
 If athleteProfile is in the JSON and is useful, one short alignment comment is OK; if absent or empty, do not make up goals.`;
 
-const systemPromptRu = `Ты тренер по силе: коротко подводишь итог только что завершённой тренировки в дневнике.
+const systemPromptRu = `Ты AI‑тренер по силе: анализируешь завершённую тренировку.
 
 Пиши по-человечески, тепло и по делу, без сухого отчёта. Только факты из JSON с данными; не придумывай травмы, анализы крови и т. п.
 
@@ -72,6 +92,26 @@ const systemPromptRu = `Ты тренер по силе: коротко подв
 - Диапазоны: 90–100 отлично; 80–89 сильно; 70–79 хорошо, но есть внимание; 60–69 смешанно; ниже 60 слабо/восстановление.
 - "grade": одна из: A+, A, B+, B, C, D — должна **примерно** согласовываться с числом "score" (например 84 и B+).
 - "verdict" — 1–2 короткие фразы-итог: людьми, главный вывод, одна оговорка при необходимости.
+
+## Контекст тренировки
+Во входном JSON есть объект workoutContext. Читай его прямо из JSON:
+- workoutContext.mode
+- workoutContext.target_muscles
+- workoutContext.duration
+- workoutContext.sets
+- workoutContext.exercises
+
+## Правила
+Если workoutContext.mode = SINGLE MUSCLE:
+НЕ ругай за отсутствие других групп мышц.
+НЕ предлагай добавлять нерелевантные группы мышц.
+Оцени:
+1. Объём на целевую мышцу
+2. Выбор/разнообразие упражнений
+3. Стабильность подходов
+4. Плотность тренировки (если длительность надёжна)
+
+Оценка score должна соответствовать тому, что ты написал.
 
 ## Длительность (важно)
 - Если completedSession.durationMin есть и она **меньше 5 минут**, считай это тестовой/ручной записью и не делай выводов по длительности.
@@ -161,8 +201,17 @@ function parseAndValidate(raw: unknown): WorkoutAiReview | null {
 }
 
 function buildUserPayload(input: WorkoutReviewRequestPayload, lang: AppLanguage) {
+  const cs = input.completedSession;
+  const exerciseList = (cs.exercises ?? []).map((e) => e.name).filter(Boolean);
   return {
     language: lang,
+    workoutContext: {
+      mode: cs.workoutMode ?? "custom",
+      target_muscles: cs.targetMuscles ?? [],
+      duration: cs.durationMin ?? null,
+      sets: cs.totalSets,
+      exercises: exerciseList,
+    },
     athleteProfile: input.athleteProfile,
     completedSession: input.completedSession,
     priorSessions: input.priorSessions,
@@ -214,9 +263,19 @@ export async function fetchWorkoutReviewFromOpenAI(
   input: WorkoutReviewRequestPayload,
   apiKey: string,
 ): Promise<WorkoutAiReview | null> {
-  const lang = parseAppLanguage(input.language);
+  const locale = parseAppLanguage(input.locale ?? input.language);
+  const lang = locale;
   const userJson = buildUserPayload(input, lang);
-  const user = `Workout review context. The "language" field is "${lang}". All coach-facing text (verdict, summary, bullet strings, and exercise_notes notes) must be in ${lang === "ru" ? "Russian" : "English"}. Do not mix languages. "grade" stays Latin (A+, B+…). Exercise names in "name" stay as in the log.\n\nJSON:\n${JSON.stringify(userJson)}`;
+  const user = `Workout review context.
+
+Language:
+- If locale = "ru", respond ONLY in Russian.
+- If locale = "en", respond ONLY in English.
+
+The UI locale is "${lang}". All coach-facing text (verdict, summary, bullet strings, and exercise_notes notes) must be in ${lang === "ru" ? "Russian" : "English"}. Do not mix languages. "grade" stays Latin (A+, B+…). Exercise names in "name" stay as in the log.
+
+JSON:
+${JSON.stringify({ ...userJson, locale: lang })}`;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const system = buildSystemInstruction(lang, attempt);

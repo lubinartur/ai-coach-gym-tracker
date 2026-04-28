@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, ChevronRight, Dumbbell, Flame, Layers, Play, Repeat2, Trash2, Wand2 } from "lucide-react";
 import { ExerciseSetRow } from "@/components/workout/ExerciseSetRow";
@@ -15,7 +16,7 @@ import {
   type AiWorkoutDraftPayload,
 } from "@/lib/aiWorkoutDraftStorage";
 import { formatMMSS } from "@/lib/formatMMSS";
-import { setVolumeFor } from "@/lib/workoutSetQuick";
+import { setVolumeForWithMultiplier } from "@/lib/workoutSetQuick";
 import { getOrCreateSettings } from "@/db/settings";
 import { getOrCreateExerciseByName, listExercises } from "@/db/exercises";
 import {
@@ -48,19 +49,20 @@ import { normalizeSuggestNextResponseClient } from "@/lib/aiCoachResponseNormali
 import { saveAiDecisionTrace } from "@/db/aiDecisionTrace";
 import { validateAiCoachSuggestion } from "@/lib/aiCoachQualityCheck";
 import { buildAiCoachRequestPayload } from "@/services/aiCoachContext";
+import { useAthleteProfile } from "@/hooks/useAthleteProfile";
 
 type WorkoutMode = "idle" | "active";
 
 const MUSCLE_CATEGORIES = [
-  { id: "chest", label: "Chest" },
-  { id: "back", label: "Back" },
-  { id: "legs", label: "Legs" },
-  { id: "shoulders", label: "Shoulders" },
-  { id: "biceps", label: "Biceps" },
-  { id: "triceps", label: "Triceps" },
-  { id: "core", label: "Core" },
-  { id: "glutes", label: "Glutes" },
-  { id: "full_body", label: "Full Body" },
+  { id: "chest", labelKey: "muscle_chest" },
+  { id: "back", labelKey: "muscle_back" },
+  { id: "legs", labelKey: "muscle_legs" },
+  { id: "shoulders", labelKey: "muscle_shoulders" },
+  { id: "biceps", labelKey: "muscle_biceps" },
+  { id: "triceps", labelKey: "muscle_triceps" },
+  { id: "core", labelKey: "muscle_core" },
+  { id: "glutes", labelKey: "muscle_glutes" },
+  { id: "full_body", labelKey: "full_body" },
 ] as const;
 
 const TEMPLATE_CARD_CLASS =
@@ -70,7 +72,9 @@ const TEMPLATE_SUBLINE_CLASS = "mt-1.5 break-words text-sm leading-snug text-neu
 const TEMPLATE_META_CLASS = "mt-1 text-xs tabular-nums text-neutral-600";
 
 export function WorkoutView() {
+  const router = useRouter();
   const { t, locale } = useI18n();
+  const { profile } = useAthleteProfile();
   const [mode, setMode] = useState<WorkoutMode>("idle");
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [loadingExercises, setLoadingExercises] = useState(true);
@@ -84,6 +88,7 @@ export function WorkoutView() {
 
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
+  const [finishOpen, setFinishOpen] = useState(false);
   const [workoutExercises, setWorkoutExercises] = useState<WorkoutExercise[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
@@ -114,6 +119,26 @@ export function WorkoutView() {
   const [customDuration, setCustomDuration] = useState<number | null>(null);
   const [customFocus, setCustomFocus] = useState<string | null>(null);
   const [customGenerating, setCustomGenerating] = useState(false);
+  const [customPreviewOpen, setCustomPreviewOpen] = useState(false);
+
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const st = (e.state ?? {}) as { leapModal?: string };
+      if (st.leapModal === "customWorkout") {
+        setCustomBuilderOpen(true);
+      } else {
+        setCustomBuilderOpen(false);
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  useEffect(() => {
+    if (!customBuilderOpen) return;
+    // Create a history entry so router.back() can return to this generator.
+    window.history.pushState({ leapModal: "customWorkout" }, "");
+  }, [customBuilderOpen]);
 
   function setAiModeAndResetResult(next: AiCoachMode) {
     setAiMode(next);
@@ -192,7 +217,7 @@ export function WorkoutView() {
       (sum, ex) =>
         sum +
         ex.sets.reduce(
-          (s, set) => s + Math.max(0, set.weight || 0) * Math.max(0, set.reps || 0),
+          (s, set) => s + Math.max(0, set.volume ?? 0),
           0,
         ),
       0,
@@ -263,6 +288,19 @@ export function WorkoutView() {
   const editingExercise = useMemo(
     () => workoutExercises.find((e) => e.id === editingExerciseId) ?? null,
     [workoutExercises, editingExerciseId],
+  );
+
+  const catalogById = useMemo(() => new Map(exercises.map((e) => [e.id, e])), [exercises]);
+
+  const volumeMultiplierFor = useCallback(
+    (exerciseId?: string, name?: string): number => {
+      const row = exerciseId ? catalogById.get(exerciseId) : undefined;
+      if (row?.equipmentTags?.includes("dumbbell")) return 2;
+      const s = (name ?? "").toLowerCase();
+      if (s.includes("dumbbell")) return 2;
+      return 1;
+    },
+    [catalogById],
   );
 
   // (kept for potential future use on the Workout dashboard)
@@ -346,6 +384,7 @@ export function WorkoutView() {
     setMode("active");
     setTitle("");
     setNotes("");
+    setCustomPreviewOpen(false);
     setWorkoutExercises([]);
     setPickerOpen(false);
     setPickerQuery("");
@@ -387,7 +426,11 @@ export function WorkoutView() {
       const last = ex.sets[ex.sets.length - 1];
       const weight = last?.weight ?? 0;
       const reps = last?.reps ?? 0;
-      const volume = setVolumeFor(weight, reps);
+      const volume = setVolumeForWithMultiplier(
+        weight,
+        reps,
+        volumeMultiplierFor(ex.exerciseId, ex.name),
+      );
       pendingSetFocusRef.current = {
         exerciseId,
         setId: newId,
@@ -426,7 +469,11 @@ export function WorkoutView() {
         weight = src.weight ?? 0;
         reps = src.reps ?? 0;
       }
-      const volume = setVolumeFor(weight, reps);
+      const volume = setVolumeForWithMultiplier(
+        weight,
+        reps,
+        volumeMultiplierFor(ex.exerciseId, ex.name),
+      );
       pendingSetFocusRef.current = {
         exerciseId,
         setId: newId,
@@ -496,7 +543,9 @@ export function WorkoutView() {
       setMode("active");
       setTitle(titleTrim);
       setNotes("");
+      setFinishOpen(false);
       const wex: WorkoutExercise[] = resolved.map(({ row, ex }) => {
+        const mult = row.equipmentTags.includes("dumbbell") ? 2 : 1;
         return {
           id: createId(),
           exerciseId: row.id,
@@ -509,7 +558,7 @@ export function WorkoutView() {
               id: setId,
               weight: w,
               reps: r,
-              volume: setVolumeFor(w, r),
+              volume: setVolumeForWithMultiplier(w, r, mult),
             };
           }),
         };
@@ -527,7 +576,7 @@ export function WorkoutView() {
         void hydrateLastTime(ex.id, ex.name);
       }
     });
-  }, [exercises, hydrateLastTime]);
+  }, [hydrateLastTime]);
 
   /** Apply AI suggestion payload (sessionStorage) once catalog is ready. */
   useEffect(() => {
@@ -654,6 +703,7 @@ export function WorkoutView() {
           sets: e.sets.map((s) => ({ weight: s.weight, reps: s.reps })),
         })),
       };
+      setCustomPreviewOpen(true);
       void applyAiDraftPayload(draft);
       setCustomBuilderOpen(false);
     } finally {
@@ -663,6 +713,7 @@ export function WorkoutView() {
 
   function startSuggestedWorkout() {
     if (!aiResult || aiResult.exercises.length === 0) return;
+    setCustomPreviewOpen(false);
     setAiDecisionContext(null);
     setAiExerciseCatalog(null);
     const payload: AiWorkoutDraftPayload = {
@@ -681,6 +732,7 @@ export function WorkoutView() {
     setMode("active");
     setTitle(t.label);
     setNotes("");
+    setCustomPreviewOpen(false);
     void (async () => {
       const rows = await Promise.all(
         t.exercises.map(async (name) => {
@@ -770,13 +822,14 @@ export function WorkoutView() {
     setWorkoutExercises((prev) =>
       prev.map((ex) => {
         if (ex.id !== localExerciseId) return ex;
+        const mult = volumeMultiplierFor(ex.exerciseId, ex.name);
         return {
           ...ex,
           sets: last.sets.map((s) => ({
             id: createId(),
             weight: s.weight,
             reps: s.reps,
-            volume: Math.max(0, s.weight) * Math.max(0, s.reps),
+            volume: setVolumeForWithMultiplier(s.weight, s.reps, mult),
           })),
         };
       }),
@@ -791,6 +844,7 @@ export function WorkoutView() {
     setWorkoutExercises((prev) =>
       prev.map((ex) => {
         if (ex.id !== exerciseId) return ex;
+        const mult = volumeMultiplierFor(ex.exerciseId, ex.name);
         return {
           ...ex,
           sets: ex.sets.map((s) => {
@@ -798,7 +852,7 @@ export function WorkoutView() {
             const weight =
               patch.weight !== undefined ? patch.weight : s.weight ?? 0;
             const reps = patch.reps !== undefined ? patch.reps : s.reps ?? 0;
-            const volume = Math.max(0, weight || 0) * Math.max(0, reps || 0);
+            const volume = setVolumeForWithMultiplier(weight, reps, mult);
             const merged = { ...s, ...patch, weight, reps, volume };
             if (patch.isDone === false) {
               merged.completedAt = undefined;
@@ -818,7 +872,11 @@ export function WorkoutView() {
       const turningOff = s.isDone === true;
       const weight = s.weight ?? 0;
       const reps = s.reps ?? 0;
-      const volume = Math.max(0, weight) * Math.max(0, reps);
+      const volume = setVolumeForWithMultiplier(
+        weight,
+        reps,
+        volumeMultiplierFor(ex.exerciseId, ex.name),
+      );
       const nextSets = ex.sets.map((x) => {
         if (x.id !== setId) return x;
         if (turningOff) {
@@ -842,6 +900,7 @@ export function WorkoutView() {
   }
 
   async function saveWorkout() {
+    setFinishOpen(false);
     setSaving(true);
     try {
       const durationMin =
@@ -874,7 +933,11 @@ export function WorkoutView() {
           const res = await fetch("/api/ai-coach/review-workout", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+              ...payload,
+              locale,
+              language: locale,
+            }),
           });
           const data = (await res.json()) as
             | WorkoutAiReview
@@ -962,8 +1025,42 @@ export function WorkoutView() {
     setEditingExerciseId(null);
   }
 
+  useEffect(() => {
+    if (mode === "active") return;
+    queueMicrotask(() => {
+      setCustomPreviewOpen(false);
+    });
+  }, [mode]);
+
   const secondaryCtaClass =
     "w-full min-h-11 rounded-xl border border-neutral-700 bg-neutral-900 py-3 text-center text-base font-medium text-neutral-200 transition active:opacity-90";
+
+  const goalLabel = useMemo(() => {
+    const g = profile?.goal;
+    if (!g) return null;
+    return g === "build_muscle"
+      ? "Build muscle"
+      : g === "lose_fat"
+        ? "Lose fat"
+        : g === "recomposition"
+          ? "Recomposition"
+          : g === "strength"
+            ? "Strength"
+            : "General fitness";
+  }, [profile?.goal]);
+
+  const levelLabel = useMemo(() => {
+    const e = profile?.experience;
+    if (!e) return null;
+    return e === "beginner" ? "Beginner" : e === "advanced" ? "Advanced" : "Intermediate";
+  }, [profile?.experience]);
+
+  const trainingLabel = useMemo(() => {
+    const d = profile?.trainingDaysPerWeek;
+    if (typeof d !== "number") return null;
+    const days = d >= 5 ? "5+" : String(Math.max(1, Math.round(d)));
+    return `${days} days per week`;
+  }, [profile?.trainingDaysPerWeek]);
 
   return (
     <main className="flex flex-col space-y-6 pb-32">
@@ -974,6 +1071,38 @@ export function WorkoutView() {
               Workout
             </h1>
           </header>
+
+          {profile?.onboardingCompleted && (goalLabel || trainingLabel || levelLabel) ? (
+            <section className="min-w-0">
+              <Card className="space-y-3">
+                <div>
+                  <p className="text-[22px] font-bold leading-tight text-neutral-50">
+                    {t("welcome_back")}
+                  </p>
+                  <p className="mt-1 text-sm text-neutral-500">
+                    {t("ai_plan_ready")}
+                  </p>
+                </div>
+                <div className="space-y-2 text-sm">
+                  {goalLabel ? (
+                    <p className="text-neutral-200">
+                      <span className="text-neutral-500">{t("goal")}:</span> {goalLabel}
+                    </p>
+                  ) : null}
+                  {trainingLabel ? (
+                    <p className="text-neutral-200">
+                      <span className="text-neutral-500">{t("training")}:</span> {trainingLabel}
+                    </p>
+                  ) : null}
+                  {levelLabel ? (
+                    <p className="text-neutral-200">
+                      <span className="text-neutral-500">{t("level")}:</span> {levelLabel}
+                    </p>
+                  ) : null}
+                </div>
+              </Card>
+            </section>
+          ) : null}
 
           {!finishSummary ? (
             <section className="min-w-0">
@@ -986,16 +1115,12 @@ export function WorkoutView() {
                         {t("ai_coach_title")}
                       </p>
                       <p className="mt-1 text-base font-semibold text-neutral-100">
-                        {locale === "ru" ? "Рекомендация следующей тренировки" : "Next workout recommendation"}
+                        {t("next_workout_recommendation")}
                       </p>
                       <p className="mt-1 text-sm text-neutral-500">
                         {aiMode === "history_based"
-                          ? locale === "ru"
-                            ? "Адаптируется под твою историю, усталость и объём."
-                            : "Adapts to your history, fatigue, and volume."
-                          : locale === "ru"
-                            ? "Структурная программа с понятным каркасом и прогрессией."
-                            : "A structured plan with a clear skeleton and progression."}
+                          ? t("ai_mode_history_blurb")
+                          : t("ai_mode_coach_blurb")}
                       </p>
                     </div>
                     <div
@@ -1136,7 +1261,7 @@ export function WorkoutView() {
                       Last workout
                     </p>
                     <p className="mt-1 text-base font-semibold text-neutral-100">
-                      {mostRecentSession.title.trim() || "Workout"}
+                      {mostRecentSession.title.trim() || t("workout_default_title")}
                     </p>
                     {quickStartLastText ? (
                       <p className="mt-1 text-sm text-neutral-500">{quickStartLastText}</p>
@@ -1162,8 +1287,8 @@ export function WorkoutView() {
           {/* 3) QUICK SPLITS (horizontal scroll) */}
           <section className="min-w-0">
             <div className="flex items-baseline justify-between gap-3">
-              <h2 className="text-sm font-medium text-neutral-400">Quick splits</h2>
-              <span className="text-xs text-neutral-500">Swipe</span>
+              <h2 className="text-sm font-medium text-neutral-400">{t("quick_splits")}</h2>
+              <span className="text-xs text-neutral-500">{t("swipe")}</span>
             </div>
             <div className="mt-2 -mx-4 flex gap-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
               <button
@@ -1178,61 +1303,59 @@ export function WorkoutView() {
                   <ArrowRight className="h-4 w-4 text-neutral-600" aria-hidden />
                 </div>
                 <p className="mt-2 text-base font-semibold text-neutral-100">
-                  {locale === "ru" ? "Своя тренировка" : "Custom workout"}
+                  {t("custom_workout_title")}
                 </p>
                 <p className="mt-1 line-clamp-2 text-xs leading-snug text-neutral-500">
-                  {locale === "ru"
-                    ? "Выбери мышцы, длительность и фокус"
-                    : "Choose muscles, duration, and focus"}
+                  {t("custom_workout_subtitle")}
                 </p>
                 <div className="mt-2 space-y-0.5">
                   <p className="text-xs tabular-nums text-neutral-600">
-                    {locale === "ru" ? "Скоро" : "Coming soon"}
+                    {t("coming_soon")}
                   </p>
                 </div>
               </button>
 
-              {QUICK_WORKOUT_TEMPLATES.map((t) => {
+              {QUICK_WORKOUT_TEMPLATES.map((tpl) => {
                 const difficultyLabel =
-                  t.difficulty === "beginner"
+                  tpl.difficulty === "beginner"
                     ? locale === "ru"
                       ? "Для новичков"
                       : "Beginner"
-                    : t.difficulty === "intermediate"
+                    : tpl.difficulty === "intermediate"
                       ? locale === "ru"
                         ? "Средний уровень"
                         : "Intermediate"
                       : null;
-                const duration = typeof t.estimatedDurationMin === "number" ? t.estimatedDurationMin : null;
+                const duration = typeof tpl.estimatedDurationMin === "number" ? tpl.estimatedDurationMin : null;
                 const Icon =
-                  t.label === "Push"
+                  tpl.label === "Push"
                     ? Flame
-                    : t.label === "Pull"
+                    : tpl.label === "Pull"
                       ? Dumbbell
-                      : t.label === "Legs"
+                      : tpl.label === "Legs"
                         ? Layers
-                        : t.label === "Upper"
+                        : tpl.label === "Upper"
                           ? Dumbbell
                           : Layers;
                 return (
                   <button
-                    key={t.id}
+                    key={tpl.id}
                     type="button"
-                    onClick={() => startWorkoutFromTemplate(t)}
+                    onClick={() => startWorkoutFromTemplate(tpl)}
                     className="min-w-[172px] max-w-[172px] rounded-2xl border border-neutral-800 bg-neutral-900/70 p-4 text-left shadow-sm transition active:scale-[0.99] active:opacity-90"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <Icon className="h-5 w-5 text-purple-500" aria-hidden />
                       <ArrowRight className="h-4 w-4 text-neutral-600" aria-hidden />
                     </div>
-                    <p className="mt-2 text-base font-semibold text-neutral-100">{t.label}</p>
+                    <p className="mt-2 text-base font-semibold text-neutral-100">{tpl.label}</p>
                     <p className="mt-1 line-clamp-2 text-xs leading-snug text-neutral-500">
-                      {t.muscleLine}
+                      {tpl.muscleLine}
                     </p>
                     <div className="mt-2 space-y-0.5">
                       <p className="text-xs tabular-nums text-neutral-600">
-                        {t.exercises.length} {locale === "ru" ? "упр." : "exercises"}
-                        {duration ? ` • ~${duration} min` : ""}
+                        {tpl.exercises.length} {t("label_exercises")}
+                        {duration ? ` • ~${duration} ${t("minutes_short")}` : ""}
                       </p>
                       {difficultyLabel ? (
                         <p className="text-xs text-neutral-600">{difficultyLabel}</p>
@@ -1248,7 +1371,7 @@ export function WorkoutView() {
                 onClick={() => setTemplatesOpen(true)}
                 className={secondaryCtaClass + " !rounded-2xl"}
               >
-                All templates
+                {t("all_templates")}
               </button>
             </div>
           </section>
@@ -1258,21 +1381,30 @@ export function WorkoutView() {
             <div className="fixed inset-0 z-50">
               <button
                 type="button"
-                aria-label="Close custom builder"
+                aria-label={t("close")}
                 className="absolute inset-0 bg-black/60 backdrop-blur-sm"
                 onClick={() => setCustomBuilderOpen(false)}
               />
               <div className="absolute inset-x-0 bottom-0 mx-auto w-full max-w-[420px]">
                 <div className="max-h-[85vh] overflow-y-auto rounded-t-3xl border border-neutral-800 bg-neutral-950 p-4 shadow-2xl pb-[calc(env(safe-area-inset-bottom,0px)+96px)]">
                   <div className="flex items-center justify-between gap-3 px-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        router.back();
+                        setCustomBuilderOpen(false);
+                      }}
+                      className="min-h-10 shrink-0 rounded-xl border border-neutral-800 bg-neutral-900 px-3 text-sm font-medium text-neutral-200 active:opacity-90"
+                      aria-label={t("back")}
+                    >
+                      ← {t("back")}
+                    </button>
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-neutral-100">
-                        {locale === "ru" ? "Своя тренировка" : "Custom workout"}
+                        {t("custom_workout_title")}
                       </p>
                       <p className="mt-0.5 text-xs text-neutral-500">
-                        {locale === "ru"
-                          ? "Выбери мышцы, длительность и фокус"
-                          : "Choose muscles, duration, and focus"}
+                        {t("custom_workout_subtitle")}
                       </p>
                     </div>
                     <button
@@ -1280,14 +1412,14 @@ export function WorkoutView() {
                       onClick={() => setCustomBuilderOpen(false)}
                       className="min-h-10 rounded-xl border border-neutral-800 bg-neutral-900 px-3 text-sm font-medium text-neutral-200 active:opacity-90"
                     >
-                      Close
+                      {t("close")}
                     </button>
                   </div>
 
                   <div className="mt-4 space-y-4">
                     <div className="space-y-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                        {locale === "ru" ? "Мышцы" : "Muscles"}
+                        {t("muscles")}
                       </p>
                       <div className="flex flex-wrap gap-2">
                         {customMuscleOptions.map((m) => {
@@ -1319,7 +1451,7 @@ export function WorkoutView() {
 
                     <div className="space-y-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                        {locale === "ru" ? "Длительность" : "Duration"}
+                        {t("duration_label")}
                       </p>
                       <div className="grid grid-cols-4 gap-2">
                         {customDurationOptions.map((d) => {
@@ -1345,7 +1477,7 @@ export function WorkoutView() {
 
                     <div className="space-y-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                        {locale === "ru" ? "Фокус" : "Focus"}
+                        {t("focus")}
                       </p>
                       <div className="grid grid-cols-2 gap-2">
                         {customFocusOptions.map((f) => {
@@ -1390,12 +1522,8 @@ export function WorkoutView() {
                         }
                       >
                         {customGenerating
-                          ? locale === "ru"
-                            ? "Генерируем…"
-                            : "Generating…"
-                          : locale === "ru"
-                            ? "Сгенерировать тренировку"
-                            : "Generate workout"}
+                          ? t("generating")
+                          : t("generate_workout")}
                       </button>
                       <p className="text-xs text-neutral-500">
                         {locale === "ru"
@@ -1414,7 +1542,7 @@ export function WorkoutView() {
             <div className="fixed inset-0 z-50">
               <button
                 type="button"
-                aria-label="Close templates"
+                aria-label={t("close")}
                 className="absolute inset-0 bg-black/60 backdrop-blur-sm"
                 onClick={() => setTemplatesOpen(false)}
               />
@@ -1430,25 +1558,25 @@ export function WorkoutView() {
                       onClick={() => setTemplatesOpen(false)}
                       className="min-h-10 rounded-xl border border-neutral-800 bg-neutral-900 px-3 text-sm font-medium text-neutral-200 active:opacity-90"
                     >
-                      Close
+                      {t("close")}
                     </button>
                   </div>
 
                   <div className="mt-3 grid grid-cols-2 gap-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.5rem)]">
-                    {QUICK_WORKOUT_TEMPLATES.map((t) => (
+                    {QUICK_WORKOUT_TEMPLATES.map((tpl) => (
                       <button
-                        key={t.id}
+                        key={tpl.id}
                         type="button"
                         onClick={() => {
                           setTemplatesOpen(false);
-                          startWorkoutFromTemplate(t);
+                          startWorkoutFromTemplate(tpl);
                         }}
                         className={TEMPLATE_CARD_CLASS + " !px-5 !py-4"}
                       >
-                        <p className={TEMPLATE_TITLE_CLASS}>{t.label}</p>
-                        <p className={TEMPLATE_SUBLINE_CLASS}>{t.muscleLine}</p>
+                        <p className={TEMPLATE_TITLE_CLASS}>{tpl.label}</p>
+                        <p className={TEMPLATE_SUBLINE_CLASS}>{tpl.muscleLine}</p>
                         <p className={TEMPLATE_META_CLASS}>
-                          {t.exercises.length} exercise{t.exercises.length === 1 ? "" : "s"}
+                          {tpl.exercises.length} {t("label_exercises")}
                         </p>
                       </button>
                     ))}
@@ -1460,9 +1588,9 @@ export function WorkoutView() {
                       }}
                       className={TEMPLATE_CARD_CLASS + " !px-5 !py-4"}
                     >
-                      <p className={TEMPLATE_TITLE_CLASS}>Custom</p>
-                      <p className={TEMPLATE_SUBLINE_CLASS}>Add exercises and sets as you go</p>
-                      <p className={TEMPLATE_META_CLASS}>Empty session</p>
+                      <p className={TEMPLATE_TITLE_CLASS}>{t("template_custom")}</p>
+                      <p className={TEMPLATE_SUBLINE_CLASS}>{t("template_custom_sub")}</p>
+                      <p className={TEMPLATE_META_CLASS}>{t("template_empty_session")}</p>
                     </button>
                   </div>
                 </div>
@@ -1474,29 +1602,40 @@ export function WorkoutView() {
 
       {mode === "active" && !editingExercise ? (
         <div className="rounded-xl bg-neutral-900 px-4 py-3">
-          <h1 className="text-2xl font-semibold leading-tight text-neutral-50">
-            Workout
-          </h1>
+          <div className="flex items-start gap-3">
+            {customPreviewOpen && !startedAt ? (
+              <button
+                type="button"
+                onClick={() => router.back()}
+                className="mt-0.5 inline-flex min-h-10 shrink-0 items-center gap-2 rounded-xl border border-[#2A2A2A] bg-[#1A1A1A] px-3 text-sm font-semibold text-[#D4D4D4] transition hover:bg-[#222222] active:opacity-90"
+              >
+                ← {t("back")}
+              </button>
+            ) : null}
+            <div className="min-w-0">
+              <h1 className="text-2xl font-semibold leading-tight text-neutral-50">
+                {t("workout")}
+              </h1>
           <p className="mt-0.5 text-xl font-semibold leading-tight text-neutral-100">
             {title.trim()
               ? title.trim()
-              : locale === "ru"
-                ? "Без названия"
-                : "Untitled"}
+              : t("untitled")}
           </p>
           <p className="mt-1 text-sm text-neutral-400">
             <span className="font-medium tabular-nums text-neutral-200">
               {formatMMSS(elapsedSec)}
             </span>{" "}
-            elapsed
+            {t("elapsed")}
           </p>
           <div className="mt-3">
             <TextField
-              label="Title"
+              label={t("title")}
               placeholder="e.g. Push A"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
             />
+          </div>
+            </div>
           </div>
         </div>
       ) : null}
@@ -1511,12 +1650,12 @@ export function WorkoutView() {
                   className="flex min-h-11 min-w-11 shrink-0 items-center text-sm text-neutral-500 transition hover:text-neutral-300"
                   onClick={closeExerciseEditor}
                 >
-                  Back
+                  {t("back")}
                 </button>
                 <h1 className="line-clamp-2 min-w-0 flex-1 break-words text-center text-2xl font-semibold leading-tight text-neutral-100">
                   {editingExercise?.name?.trim()
                     ? editingExercise.name
-                    : "Exercise"}
+                    : t("exercise")}
                 </h1>
                 <div className="w-11 shrink-0" aria-hidden />
               </header>
@@ -1529,59 +1668,18 @@ export function WorkoutView() {
               />
 
               <Card className="!mt-0 !space-y-3 !p-4">
-              {lastByExerciseId[editingExercise.id] ? (
-                <div className="space-y-2.5">
-                  <p className="text-sm leading-snug text-neutral-400">
-                    <span className="text-neutral-500">
-                      {lastByExerciseId[editingExercise.id]!.date}
-                    </span>
-                    <br />
-                    {lastByExerciseId[editingExercise.id]!.sets
-                      .slice(0, 8)
-                      .map((s) => `${s.weight}×${s.reps}`)
-                      .join(" · ")}
-                    {lastByExerciseId[editingExercise.id]!.sets.length > 8
-                      ? "…"
-                      : ""}
-                  </p>
-                  <Button
-                    variant="editorSecondary"
-                    onClick={() => copyLastSets(editingExercise.id)}
-                  >
-                    Copy last sets
-                  </Button>
-                </div>
-              ) : (
-                <p className="text-sm text-neutral-500">No last session in log.</p>
-              )}
-
-              <div className="space-y-3">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <Button
-                    variant="editorSecondary"
-                    onClick={() => addSameSet(editingExercise.id)}
-                  >
-                    + Same set
-                  </Button>
-                  <Button
-                    variant="editorSecondary"
-                    onClick={() => addEmptySet(editingExercise.id)}
-                  >
-                    + Empty set
-                  </Button>
-                </div>
-                <Button
-                  variant="editorUtility"
-                  onClick={() => addSetCopyingSecondToLast(editingExercise.id)}
-                >
-                  Copy previous
-                </Button>
-              </div>
-
               {editingExercise.sets.length === 0 ? (
-                <p className="text-sm text-neutral-400">No sets yet.</p>
+                <p className="text-sm text-neutral-400">{t("no_sets_yet")}</p>
               ) : (
-                <div className="flex flex-col gap-3">
+                <div className="space-y-3">
+                  <div className="grid items-center gap-2 border-b border-[#2A2A2A] px-3 pb-2 text-xs font-semibold text-[#9CA3AF] [grid-template-columns:64px_minmax(78px,1fr)_64px_48px_32px]">
+                    <span>{t("set_editor_header_set")}</span>
+                    <span>{t("set_editor_header_weight_kg")}</span>
+                    <span>{t("set_editor_header_reps")}</span>
+                    <span className="text-center">{t("set_editor_header_done")}</span>
+                    <span />
+                  </div>
+                  <div className="flex flex-col gap-3">
                   {editingExercise.sets.map((set, idx) => (
                     <ExerciseSetRow
                       key={set.id}
@@ -1601,11 +1699,49 @@ export function WorkoutView() {
                       }
                     />
                   ))}
+                  </div>
                 </div>
               )}
 
+              <div className="space-y-3 pt-2">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Button
+                    variant="editorSecondary"
+                    onClick={() => addSameSet(editingExercise.id)}
+                    disabled={editingExercise.sets.length === 0}
+                    title={editingExercise.sets.length === 0 ? t("add_empty_set_first") : undefined}
+                  >
+                    {t("same_set")}
+                  </Button>
+                  <Button
+                    variant="editorSecondary"
+                    onClick={() => addEmptySet(editingExercise.id)}
+                  >
+                    {t("empty_set")}
+                  </Button>
+                </div>
+
+                {editingExercise.sets.length >= 2 ? (
+                  <Button
+                    variant="editorUtility"
+                    onClick={() => addSetCopyingSecondToLast(editingExercise.id)}
+                  >
+                    {t("copy_previous")}
+                  </Button>
+                ) : null}
+
+                {lastByExerciseId[editingExercise.id] ? (
+                  <Button
+                    variant="editorUtility"
+                    onClick={() => copyLastSets(editingExercise.id)}
+                  >
+                    {t("copy_last_sets")}
+                  </Button>
+                ) : null}
+              </div>
+
               <div className="flex items-baseline justify-between border-t border-neutral-800/80 pt-2.5">
-                <span className="text-sm text-neutral-500">Volume (kg)</span>
+                <span className="text-sm text-neutral-500">{t("volume_kg")}</span>
                 <span className="text-lg font-medium tabular-nums text-neutral-100">
                   {Math.round(
                     editingExercise.sets.reduce(
@@ -1624,14 +1760,14 @@ export function WorkoutView() {
                   variant="editorSecondary"
                   onClick={closeExerciseEditor}
                 >
-                  Done
+                  {t("done")}
                 </Button>
               </div>
             </>
           ) : (
             <>
           <div className="space-y-3">
-            <h2 className="text-sm font-medium text-neutral-400">Exercises</h2>
+            <h2 className="text-sm font-medium text-neutral-400">{t("exercises")}</h2>
             {workoutExercises.map((ex) => {
               const last = lastByExerciseId[ex.id];
               return (
@@ -1675,7 +1811,7 @@ export function WorkoutView() {
                         <button
                           type="button"
                           onClick={() => deleteExerciseCard(ex.id)}
-                          aria-label={locale === "ru" ? "Удалить упражнение" : "Remove exercise"}
+                          aria-label={t("remove_exercise")}
                           className="flex h-10 w-10 items-center justify-center text-neutral-500 transition hover:text-red-300 active:text-red-200"
                         >
                           <Trash2 className="h-5 w-5" aria-hidden />
@@ -1687,7 +1823,7 @@ export function WorkoutView() {
               );
             })}
             {workoutExercises.length === 0 ? (
-              <p className="text-sm text-neutral-400">No exercises yet. Add one below.</p>
+              <p className="text-sm text-neutral-400">{t("no_exercises_yet")}</p>
             ) : null}
           </div>
 
@@ -1738,9 +1874,9 @@ export function WorkoutView() {
                 {pickerQuery.trim().length >= 2 ? (
                   <div className="flex max-h-[45vh] flex-col gap-1.5 overflow-y-auto">
                     {loadingExercises ? (
-                      <p className="text-sm text-neutral-500">Loading…</p>
+                      <p className="text-sm text-neutral-500">{t("loading")}</p>
                     ) : searchResults.length === 0 ? (
-                      <p className="text-sm text-neutral-500">No matches.</p>
+                      <p className="text-sm text-neutral-500">{t("exercises_no_matches_title")}.</p>
                     ) : (
                       searchResults.map((e) => (
                         <button
@@ -1767,7 +1903,7 @@ export function WorkoutView() {
                   <div className="flex max-h-[50vh] flex-col gap-3 overflow-y-auto">
                     {pickerQuery.trim().length > 0 && pickerQuery.trim().length < 2 ? (
                       <p className="text-sm text-neutral-500">
-                        Type 2+ characters
+                        {t("type_2_chars")}
                       </p>
                     ) : null}
 
@@ -1776,18 +1912,19 @@ export function WorkoutView() {
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-sm text-neutral-400">
                             {MUSCLE_CATEGORIES.find((c) => c.id === pickerCategory)
-                              ?.label ?? "Exercises"}
+                              ? t(MUSCLE_CATEGORIES.find((c) => c.id === pickerCategory)!.labelKey)
+                              : t("exercises")}
                           </p>
                           <button
                             type="button"
                             onClick={() => setPickerCategory(null)}
                             className="text-sm text-primary/90"
                           >
-                            All
+                            {t("all")}
                           </button>
                         </div>
                         {categoryExercises.length === 0 ? (
-                          <p className="text-sm text-neutral-500">Nothing in this group.</p>
+                          <p className="text-sm text-neutral-500">{t("nothing_in_group")}</p>
                         ) : (
                           <div className="flex flex-col gap-1.5">
                             {categoryExercises.map((e) => (
@@ -1816,7 +1953,7 @@ export function WorkoutView() {
                       <div className="flex flex-col gap-3">
                         {favoriteExercises.length > 0 ? (
                           <div>
-                            <p className="mb-1.5 text-xs text-neutral-500">Favorites</p>
+                            <p className="mb-1.5 text-xs text-neutral-500">{t("favorites")}</p>
                             <div className="flex max-h-40 flex-col gap-1.5 overflow-y-auto pr-0.5">
                               {favoriteExercises.map((e) => (
                                 <button
@@ -1840,14 +1977,14 @@ export function WorkoutView() {
                           </div>
                         ) : null}
                         <div>
-                          <p className="mb-1.5 text-xs text-neutral-500">Recent</p>
+                          <p className="mb-1.5 text-xs text-neutral-500">{t("recent")}</p>
                           {recentLoading ? (
-                            <p className="text-sm text-neutral-500">Loading…</p>
+                            <p className="text-sm text-neutral-500">{t("loading")}</p>
                           ) : recentNamesForPicker.length === 0 ? (
                             <p className="text-sm text-neutral-500">
                               {recentNames.length === 0
-                                ? "No history yet."
-                                : "No recent — try a group below."}
+                                ? t("no_history_yet")
+                                : t("no_recent_try_group")}
                             </p>
                           ) : (
                             <div className="flex flex-col gap-1.5">
@@ -1865,7 +2002,7 @@ export function WorkoutView() {
                           )}
                         </div>
                         <div>
-                          <p className="mb-1.5 text-xs text-neutral-500">By muscle</p>
+                          <p className="mb-1.5 text-xs text-neutral-500">{t("by_muscle")}</p>
                           <div className="flex flex-wrap gap-1.5">
                             {MUSCLE_CATEGORIES.map((c) => (
                               <button
@@ -1877,7 +2014,7 @@ export function WorkoutView() {
                                 }}
                                 className="rounded-full bg-neutral-800/90 px-2.5 py-1.5 text-xs font-medium text-neutral-200 transition active:bg-neutral-800"
                               >
-                                {c.label}
+                                {t(c.labelKey)}
                               </button>
                             ))}
                           </div>
@@ -1887,8 +2024,8 @@ export function WorkoutView() {
 
                     <div className="space-y-2 border-t border-neutral-800/80 pt-3">
                       <TextField
-                        label="Not in list"
-                        placeholder="e.g. Landmine press"
+                        label={t("not_in_list")}
+                        placeholder={t("not_in_list_ph")}
                         value={customExerciseName}
                         onChange={(e) => setCustomExerciseName(e.target.value)}
                       />
@@ -1900,7 +2037,7 @@ export function WorkoutView() {
                             setCustomExerciseName("");
                           }}
                         >
-                          Add
+                          {t("add")}
                         </Button>
                         <Button
                           variant="ghost"
@@ -1911,7 +2048,7 @@ export function WorkoutView() {
                             setCustomExerciseName("");
                           }}
                         >
-                          Close
+                          {t("close")}
                         </Button>
                       </div>
                     </div>
@@ -1936,28 +2073,71 @@ export function WorkoutView() {
                     className="flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl bg-purple-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-purple-500 active:opacity-90"
                   >
                     <Play className="h-5 w-5" aria-hidden />
-                    {locale === "ru" ? "Начать тренировку" : "Start workout"}
+                    {t("start_workout")}
                   </button>
                   <p className="text-xs text-neutral-500">
-                    {locale === "ru"
-                      ? "Вы можете изменить упражнения перед началом тренировки."
-                      : "You can edit exercises before starting the timer."}
+                    {t("start_workout_hint")}
                   </p>
                 </div>
               ) : null}
 
-          {startedAt ? (
+              {startedAt && finishOpen ? (
+                <Card className="!p-5 space-y-4">
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold text-[#FFFFFF]">{t("finish_workout")}</p>
+                    <p className="text-sm text-[#9CA3AF]">{t("finish_workout_note_blurb")}</p>
+                  </div>
+                  <div className="rounded-[14px] border border-[#2A2A2A] bg-[#222222] px-3 py-2.5">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-xs text-[#9CA3AF]">{t("sets")}</span>
+                      <span className="text-base font-semibold tabular-nums text-[#FFFFFF]">
+                        {totals.totalSets}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex items-baseline justify-between gap-2">
+                      <span className="text-xs text-[#9CA3AF]">{t("volume_kg")}</span>
+                      <span className="text-base font-semibold tabular-nums text-[#FFFFFF]">
+                        {Math.round(totals.totalVolume * 100) / 100}
+                      </span>
+                    </div>
+                  </div>
+                  <TextArea
+                    label={t("notes")}
+                    placeholder={t("notes_placeholder")}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="!min-h-[110px]"
+                  />
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      onClick={() => void saveWorkout()}
+                      disabled={saving || workoutExercises.length === 0}
+                    >
+                      {saving ? t("saving") : t("save_workout")}
+                    </Button>
+                    <Button
+                      variant="editorUtility"
+                      onClick={() => setFinishOpen(false)}
+                      disabled={saving}
+                    >
+                      {t("back_to_workout")}
+                    </Button>
+                  </div>
+                </Card>
+              ) : null}
+
+              {startedAt && !finishOpen ? (
             <div className="space-y-2">
-              <h2 className="text-sm font-medium text-neutral-400">Session stats</h2>
+              <h2 className="text-sm font-medium text-neutral-400">{t("session_stats")}</h2>
               <div className="rounded-xl border border-neutral-800/80 bg-neutral-950/30 px-3 py-2.5">
                 <div className="flex items-baseline justify-between gap-2">
-                  <span className="text-xs text-neutral-400">Sets</span>
+                      <span className="text-xs text-neutral-400">{t("sets")}</span>
                   <span className="text-base font-medium tabular-nums text-neutral-200">
                     {totals.totalSets}
                   </span>
                 </div>
                 <div className="mt-1.5 flex items-baseline justify-between gap-2">
-                  <span className="text-xs text-neutral-400">Volume (kg)</span>
+                      <span className="text-xs text-neutral-400">{t("volume_kg")}</span>
                   <span className="text-base font-medium tabular-nums text-neutral-200">
                     {Math.round(totals.totalVolume * 100) / 100}
                   </span>
@@ -1966,24 +2146,15 @@ export function WorkoutView() {
             </div>
           ) : null}
 
-          <div>
-            <TextArea
-              label="Notes"
-              placeholder="How did the session feel?"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className="!min-h-[100px]"
-            />
-          </div>
+          {/* Notes moved to finish screen */}
 
-          {startedAt ? (
+          {startedAt && !finishOpen ? (
             <div className="pt-0.5">
               <Button
-                onClick={() => void saveWorkout()}
+                onClick={() => setFinishOpen(true)}
                 disabled={saving || workoutExercises.length === 0}
-                className="!rounded-xl !bg-purple-600 !py-3 !font-medium !text-white hover:!bg-purple-500"
               >
-                {saving ? "Saving…" : "Finish workout"}
+                {t("finish_workout")}
               </Button>
             </div>
           ) : null}

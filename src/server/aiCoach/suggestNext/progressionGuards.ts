@@ -16,6 +16,7 @@ import type {
   SuggestNextWorkoutResponse,
 } from "@/types/aiCoach";
 import type { EngineRuntimeContext } from "@/types/engineRuntimeContext";
+import type { Exercise } from "@/types/trainingDiary";
 
 const WEIGHT_EPS = 0.2;
 

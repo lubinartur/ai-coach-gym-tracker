@@ -1,15 +1,23 @@
 "use client";
 
 import type { WorkoutSession } from "@/types/trainingDiary";
+import { useI18n } from "@/i18n/LocaleContext";
 
 type SetT = WorkoutSession["exercises"][number]["sets"][number];
 
 const inputSet =
-  "min-h-[44px] w-full min-w-0 max-w-[6rem] rounded-xl " +
-  "bg-neutral-950/60 px-2.5 py-2 text-right text-lg font-medium tabular-nums " +
-  "text-neutral-100 outline-none ring-1 ring-inset ring-neutral-800 " +
-  "focus:ring-purple-500/50 " +
-  "placeholder:text-neutral-600 [color-scheme:dark]";
+  "min-h-[44px] w-full min-w-0 max-w-[7.5rem] rounded-[14px] " +
+  "bg-[#1A1A1A] px-3 py-2 text-center text-lg font-semibold tabular-nums " +
+  "text-[#FFFFFF] outline-none ring-1 ring-inset ring-[#2A2A2A] " +
+  "focus:ring-[#A855F7]/40 focus:ring-2 " +
+  "placeholder:text-[#9CA3AF] [color-scheme:dark]";
+
+const weightInputClass = "min-w-[72px] max-w-[90px]";
+const repsInputClass = "min-w-[56px] max-w-[72px]";
+
+const rowGrid =
+  "grid items-center gap-2 " +
+  "[grid-template-columns:64px_minmax(78px,1fr)_64px_48px_32px]";
 
 type Props = {
   set: SetT;
@@ -32,73 +40,62 @@ export function ExerciseSetRow({
   weightInputId,
   repsInputId,
 }: Props) {
+  const { t } = useI18n();
   const done = set.isDone === true;
 
   return (
     <div
-      className={`rounded-xl bg-neutral-900 px-4 py-3 ${
-        done ? "ring-1 ring-emerald-500/35" : ""
+      className={`rounded-[14px] bg-[#222222] px-3 py-2.5 ${
+        done ? "ring-1 ring-[#22C55E]/35" : "ring-1 ring-[#2A2A2A]"
       }`}
       data-set-row
     >
-      <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-3">
-        <span className="w-12 shrink-0 text-sm font-medium tabular-nums text-neutral-500">
-          Set {index1}
+      <div className={rowGrid}>
+        <span className="text-sm font-semibold tabular-nums text-[#9CA3AF]">
+          {t("set")} {index1}
         </span>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:max-w-[8.5rem]">
+        <div className="min-w-0">
           <span className="sr-only" id={`${weightInputId}-lb`}>
-            Weight (kg)
+            {t("set_editor_header_weight_kg")}
           </span>
           <input
             id={weightInputId}
             type="text"
             inputMode="decimal"
             autoComplete="off"
-            className={inputSet + " w-full"}
+            className={inputSet + " " + weightInputClass}
             aria-labelledby={`${weightInputId}-lb`}
             value={set.weight === 0 ? "" : String(set.weight ?? 0)}
             onChange={(e) => onChangeWeight(Number(e.target.value || 0))}
             placeholder="0"
           />
-          <span
-            className="shrink-0 text-sm text-neutral-500"
-            aria-hidden
-          >
-            kg
-          </span>
         </div>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:max-w-[7rem]">
+        <div className="min-w-0">
           <span className="sr-only" id={`${repsInputId}-lb`}>
-            Reps
+            {t("reps")}
           </span>
           <input
             id={repsInputId}
             type="text"
             inputMode="numeric"
             autoComplete="off"
-            className={inputSet + " w-full max-w-[4.25rem]"}
+            className={inputSet + " " + repsInputClass}
             aria-labelledby={`${repsInputId}-lb`}
             value={set.reps === 0 ? "" : String(set.reps ?? 0)}
             onChange={(e) => onChangeReps(Number(e.target.value || 0))}
             placeholder="0"
           />
-          <span
-            className="shrink-0 text-sm text-neutral-500"
-            aria-hidden
-          >
-            reps
-          </span>
         </div>
         <button
           type="button"
           onClick={onToggleDone}
-          className={`flex h-10 w-10 min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg border text-base font-semibold transition active:opacity-90 ${
+          className={`flex h-10 w-10 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border text-base font-semibold transition active:opacity-90 ${
             done
-              ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-400"
-              : "border-neutral-700 bg-neutral-950/60 text-neutral-500"
+              ? "border-[#22C55E]/50 bg-[rgba(34,197,94,0.15)] text-[#22C55E]"
+              : "border-[#2A2A2A] bg-[#1A1A1A] text-[#9CA3AF]"
           }`}
-          title={done ? "Mark not done" : "Mark done"}
-          aria-label={done ? "Mark set not done" : "Mark set done"}
+          title={done ? t("mark_not_done") : t("mark_done")}
+          aria-label={done ? t("mark_set_not_done") : t("mark_set_done")}
           aria-pressed={done}
         >
           ✓
@@ -106,9 +103,9 @@ export function ExerciseSetRow({
         <button
           type="button"
           onClick={onDelete}
-          className="ml-auto flex h-10 min-h-[44px] min-w-[44px] shrink-0 items-center justify-center text-xl text-neutral-500 transition active:text-red-400/80 sm:ml-0"
-          title="Delete set"
-          aria-label="Delete set"
+          className="flex h-10 min-h-[44px] min-w-[32px] items-center justify-center text-xl text-[#9CA3AF] transition active:text-[#EF4444]/80"
+          title={t("delete_set")}
+          aria-label={t("delete_set")}
         >
           ×
         </button>

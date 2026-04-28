@@ -42,7 +42,7 @@ function isCustom(row: Exercise): boolean {
   return row.source === "custom";
 }
 
-function isMissingArray<T>(v: unknown): v is undefined | null {
+function isMissingArray(v: unknown): v is undefined | null {
   return !Array.isArray(v);
 }
 

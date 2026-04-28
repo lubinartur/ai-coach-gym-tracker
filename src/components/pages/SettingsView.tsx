@@ -22,15 +22,15 @@ import type { AthleteProfile } from "@/types/athleteProfile";
 import type { TrainingPhase } from "@/types/training";
 
 const planningOptions = [
-  { value: "light", label: "Light" },
-  { value: "normal", label: "Normal" },
-  { value: "intense", label: "Intense" },
+  { value: "light", labelKey: "planning_light" },
+  { value: "normal", labelKey: "planning_normal" },
+  { value: "intense", labelKey: "planning_intense" },
 ] as const;
 
-const phaseOptions: { value: TrainingPhase; label: string }[] = [
-  { value: "natural", label: "Natural" },
-  { value: "on_cycle", label: "On cycle" },
-  { value: "post_cycle", label: "Post cycle" },
+const phaseOptions: { value: TrainingPhase; labelKey: "phase_natural" | "phase_on_cycle" | "phase_post_cycle" }[] = [
+  { value: "natural", labelKey: "phase_natural" },
+  { value: "on_cycle", labelKey: "phase_on_cycle" },
+  { value: "post_cycle", labelKey: "phase_post_cycle" },
 ];
 
 const allTypes: ActionType[] = ["workout", "run", "reading", "project"];
@@ -101,7 +101,7 @@ export function SettingsView() {
     <main className="mx-auto flex w-full min-w-0 max-w-full flex-col space-y-6 pb-32">
       <header className="space-y-1">
         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          Life Execution Panel
+          {t("life_panel_brand")}
         </p>
         <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
           {t("settings_title")}
@@ -163,22 +163,22 @@ export function SettingsView() {
             }}
           />
           <TextField
-            label="Display name"
+            label={t("settings_display_name")}
             value={merged.userName ?? ""}
-            placeholder="Optional"
+            placeholder={t("optional")}
             onChange={(e) =>
               setOverrides((o) => ({ ...o, userName: e.target.value }))
             }
           />
           <TextField
-            label="Timezone (IANA)"
+            label={t("settings_timezone")}
             value={merged.timezone}
             onChange={(e) =>
               setOverrides((o) => ({ ...o, timezone: e.target.value }))
             }
           />
           <TextField
-            label="Default rest between sets (seconds)"
+            label={t("settings_default_rest")}
             inputMode="numeric"
             value={String(merged.defaultRestSec ?? 90)}
             placeholder="90"
@@ -193,8 +193,11 @@ export function SettingsView() {
             }}
           />
           <Select
-            label="Planning style"
-            options={[...planningOptions]}
+            label={t("settings_planning_style")}
+            options={planningOptions.map((o) => ({
+              value: o.value,
+              label: t(o.labelKey),
+            }))}
             value={merged.planningStyle}
             onChange={(e) =>
               setOverrides((o) => ({
@@ -205,7 +208,7 @@ export function SettingsView() {
           />
           <div className="flex flex-col gap-2">
             <span className="text-sm font-medium text-neutral-200">
-              Preferred action types
+              {t("settings_preferred_action_types")}
             </span>
             <div className="grid grid-cols-2 gap-2">
               {allTypes.map((t) => {
@@ -286,10 +289,10 @@ export function SettingsView() {
             </p>
           </div>
           <Select
-            label="Training phase"
+            label={t("training_phase")}
             options={phaseOptions.map((o) => ({
               value: o.value,
-              label: o.label,
+              label: t(o.labelKey),
             }))}
             value={mergedAthlete.phase ?? "natural"}
             onChange={(e) =>
@@ -300,7 +303,7 @@ export function SettingsView() {
             }
           />
           <TextField
-            label="Off-cycle date (optional)"
+            label={t("off_cycle_date_optional")}
             type="date"
             value={mergedAthlete.offCycleDate ?? ""}
             onChange={(e) =>
@@ -311,7 +314,7 @@ export function SettingsView() {
             }
           />
           <TextArea
-            label="Notes (optional)"
+            label={t("athlete_notes_optional")}
             value={mergedAthlete.notes ?? ""}
             placeholder="e.g. avoid aggressive progression for several weeks"
             onChange={(e) =>
@@ -322,10 +325,10 @@ export function SettingsView() {
 
         <section className="flex flex-col gap-5 border-t border-neutral-800 pt-8">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            API
+            {t("settings_api_section")}
           </h2>
           <TextField
-            label="Backend base URL (optional)"
+            label={t("backend_base_url_optional")}
             placeholder="https://your-api.example.com"
             value={merged.backendUrl ?? ""}
             onChange={(e) =>
@@ -333,26 +336,25 @@ export function SettingsView() {
             }
           />
           <p className="text-xs text-neutral-500">
-            When set, plan generation POSTs to{" "}
+            {t("backend_base_url_help_prefix")}{" "}
             <code className="rounded-md border border-neutral-800 bg-neutral-950/80 px-1.5 py-0.5 text-[11px] text-neutral-300">
               {"{base}"}/api/generate-plan
             </code>
-            . Leave empty to use this app&apos;s Next route.
+            . {t("backend_base_url_help_suffix")}
           </p>
         </section>
 
         <Button type="submit" disabled={saving} className="!min-h-[52px]">
-          {saving ? "Saving…" : "Save settings"}
+          {saving ? t("saving") : t("save_settings")}
         </Button>
       </form>
 
       <section className="mt-2 flex flex-col gap-3 rounded-2xl border border-red-500/30 bg-red-500/[0.06] p-5">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-red-300/90">
-          Danger zone
+          {t("danger_zone")}
         </h2>
         <p className="text-sm text-red-200/90">
-          Permanently removes all saved workout sessions on this device. Exercises
-          (including favorites) and app settings are not changed.
+          {t("danger_zone_clear_workouts_body")}
         </p>
         <button
           type="button"
@@ -360,7 +362,7 @@ export function SettingsView() {
           onClick={async () => {
             if (
               !window.confirm(
-                "Delete all workout history on this device? This cannot be undone.",
+                t("confirm_delete_all_workouts"),
               )
             ) {
               return;
@@ -371,12 +373,12 @@ export function SettingsView() {
               await clearAllWorkoutSessions();
               setWorkoutClearFeedback({
                 ok: true,
-                text: "Workout history cleared. Progress will show 0 workouts and exercise stats reset to none.",
+                text: t("workout_history_cleared"),
               });
             } catch {
               setWorkoutClearFeedback({
                 ok: false,
-                text: "Could not clear workout history. Try again.",
+                text: t("workout_history_clear_failed"),
               });
             } finally {
               setClearingWorkouts(false);
@@ -384,7 +386,7 @@ export function SettingsView() {
           }}
           className="w-full min-h-11 rounded-2xl border border-red-500/50 bg-red-500/5 px-4 py-2.5 text-sm font-medium text-red-300 transition active:opacity-80 disabled:opacity-50"
         >
-          {clearingWorkouts ? "Clearing…" : "Clear workout history"}
+          {clearingWorkouts ? t("clearing") : t("clear_workout_history")}
         </button>
         {workoutClearFeedback ? (
           <p

@@ -269,9 +269,11 @@ function capCoachNote(s: string, max = 240): string {
 function TrainingSignalsDetail({
   trainingSignals,
   locale,
+  t,
 }: {
   trainingSignals: SuggestNextWorkoutResponse["training_signals"];
   locale: string;
+  t: T;
 }) {
   const isRu = locale === "ru";
   const fatigueRaw = String(trainingSignals.fatigue ?? "unknown");
@@ -309,23 +311,23 @@ function TrainingSignalsDetail({
   return (
     <div className="mt-4 space-y-1.5 border-t border-neutral-800/80 pt-4 text-sm text-neutral-200/90">
       <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-        {isRu ? "Состояние нагрузки" : "Load status"}
+        {t("load_status")}
       </p>
       <div className="space-y-1.5">
         <div className="flex items-start justify-between gap-3">
-          <span className="text-neutral-500">{isRu ? "Усталость" : "Fatigue"}</span>
+          <span className="text-neutral-500">{t("fatigue")}</span>
           <span className="text-right font-medium text-neutral-100">
             {isRu ? fatigueRu : fatigueRaw}
           </span>
         </div>
         <div className="flex items-start justify-between gap-3">
-          <span className="text-neutral-500">{isRu ? "Объём" : "Volume trend"}</span>
+          <span className="text-neutral-500">{t("volume_trend")}</span>
           <span className="text-right font-medium text-neutral-100">
             {isRu ? volumeRu : volumeRaw}
           </span>
         </div>
         <div className="flex items-start justify-between gap-3">
-          <span className="text-neutral-500">{isRu ? "Стратегия" : "Strategy"}</span>
+          <span className="text-neutral-500">{t("strategy")}</span>
           <span className="text-right font-medium text-neutral-100">
             {isRu ? strategyRu : strategyRaw}
           </span>
@@ -498,13 +500,13 @@ export function AiCoachSuggestionResult({
         if (k === "risk") return "риск";
         return k;
       },
-      startWorkout: isRu ? "Подготовить тренировку" : "Prepare workout",
-      confidenceLabel: isRu ? "Уверенность" : "Confidence",
+      startWorkout: t("prepare_workout"),
+      confidenceLabel: t("confidence"),
       calibrationMessage: isRu
         ? "Калибровочная тренировка: подбери веса примерно под RPE 7. Так план нагрузки станет точнее."
         : "This is your calibration workout. Adjust loads to about RPE 7 so we can plan your training more accurately.",
     };
-  }, [locale]);
+  }, [locale, t]);
 
   const derivedInsights = useMemo(() => {
     if (result.insights?.length) {
@@ -623,15 +625,13 @@ export function AiCoachSuggestionResult({
           {loadSignalsUnknown ? (
             <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-950/40 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                {locale === "ru" ? "Состояние нагрузки" : "Load status"}
+                {t("load_status")}
               </p>
               <p className="mt-1 text-base font-semibold text-neutral-100">
-                {locale === "ru" ? "Базовая тренировка" : "Baseline session"}
+                {t("baseline_session")}
               </p>
               <p className="mt-1 text-sm text-neutral-500">
-                {locale === "ru"
-                  ? "Собираем данные тренировок, чтобы персонализировать план."
-                  : "We are collecting training data to personalize your plan."}
+                {t("baseline_session_blurb")}
               </p>
               {showCalibrationBanner ? (
                 <p className="mt-3 border-t border-neutral-800/80 pt-3 text-sm leading-snug text-neutral-300/90">
@@ -643,6 +643,7 @@ export function AiCoachSuggestionResult({
             <TrainingSignalsDetail
               trainingSignals={result.training_signals}
               locale={locale}
+              t={t}
             />
           ) : null}
         </div>
@@ -668,7 +669,7 @@ export function AiCoachSuggestionResult({
             if (!rows.length || !hasUseful) {
               return (
                 <section className="space-y-2">
-                  <SectionHeader title={isRu ? "Восстановление" : "Recovery"} />
+                  <SectionHeader title={t("recovery")} />
                   <Card className="!p-5">
                     <p className="text-base font-semibold text-neutral-100">
                       {isRu ? "Собираем данные восстановления" : "Learning your recovery"}
@@ -684,7 +685,7 @@ export function AiCoachSuggestionResult({
             }
             return (
               <section className="space-y-2">
-                <SectionHeader title={locale === "ru" ? "Восстановление" : "Recovery"} />
+                <SectionHeader title={t("recovery")} />
                 <Card className="!p-5">
                   <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                     {rows.map((r, idx) => {
@@ -914,7 +915,11 @@ export function AiCoachSuggestionResult({
       <section className="space-y-2">
         <SectionHeader
           title={t("exercises")}
-          right={<Tag tone="neutral">{result.exercises.length} items</Tag>}
+          right={
+            <Tag tone="neutral">
+              {result.exercises.length} {t("items")}
+            </Tag>
+          }
         />
         <div className="space-y-3">
           {result.exercises.map((ex, i) => {

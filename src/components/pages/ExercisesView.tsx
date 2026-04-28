@@ -8,35 +8,37 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Select";
 import { TextField } from "@/components/ui/TextField";
+import { useI18n } from "@/i18n/LocaleContext";
 
 const muscleGroupOptions = [
-  { value: "all", label: "All muscle groups" },
-  { value: "chest", label: "Chest" },
-  { value: "back", label: "Back" },
-  { value: "shoulders", label: "Shoulders" },
-  { value: "biceps", label: "Biceps" },
-  { value: "triceps", label: "Triceps" },
-  { value: "legs", label: "Legs" },
-  { value: "glutes", label: "Glutes" },
-  { value: "hamstrings", label: "Hamstrings" },
-  { value: "quads", label: "Quads" },
-  { value: "calves", label: "Calves" },
-  { value: "abs", label: "Abs" },
-  { value: "cardio", label: "Cardio" },
+  { value: "all", labelKey: "all_muscle_groups" },
+  { value: "chest", labelKey: "muscle_chest" },
+  { value: "back", labelKey: "muscle_back" },
+  { value: "shoulders", labelKey: "muscle_shoulders" },
+  { value: "biceps", labelKey: "muscle_biceps" },
+  { value: "triceps", labelKey: "muscle_triceps" },
+  { value: "legs", labelKey: "muscle_legs" },
+  { value: "glutes", labelKey: "muscle_glutes" },
+  { value: "hamstrings", labelKey: "muscle_hamstrings" },
+  { value: "quads", labelKey: "muscle_quads" },
+  { value: "calves", labelKey: "muscle_calves" },
+  { value: "abs", labelKey: "muscle_abs" },
+  { value: "cardio", labelKey: "muscle_cardio" },
 ] as const;
 
 const equipmentOptions = [
-  { value: "all", label: "All equipment" },
-  { value: "barbell", label: "Barbell" },
-  { value: "dumbbell", label: "Dumbbell" },
-  { value: "cable", label: "Cable" },
-  { value: "machine", label: "Machine" },
-  { value: "bodyweight", label: "Bodyweight" },
-  { value: "kettlebell", label: "Kettlebell" },
-  { value: "cardio", label: "Cardio" },
+  { value: "all", labelKey: "all_equipment" },
+  { value: "barbell", labelKey: "equipment_barbell" },
+  { value: "dumbbell", labelKey: "equipment_dumbbell" },
+  { value: "cable", labelKey: "equipment_cable" },
+  { value: "machine", labelKey: "equipment_machine" },
+  { value: "bodyweight", labelKey: "equipment_bodyweight" },
+  { value: "kettlebell", labelKey: "equipment_kettlebell" },
+  { value: "cardio", labelKey: "equipment_cardio" },
 ] as const;
 
 export function ExercisesView() {
+  const { t } = useI18n();
   const [items, setItems] = useState<Exercise[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
@@ -105,59 +107,62 @@ export function ExercisesView() {
     <main className="mx-auto flex w-full min-w-0 max-w-full flex-col space-y-6 pb-32">
       <header className="space-y-1">
         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          Life Execution Panel
+          {t("life_panel_brand")}
         </p>
         <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
-          Exercises
+          {t("exercises_title")}
         </h1>
-        <p className="text-sm text-neutral-500">Saved exercise library</p>
+        <p className="text-sm text-neutral-500">{t("exercise_library")}</p>
       </header>
 
       <section className="flex flex-col gap-3">
         <Button className="!min-h-[52px]" onClick={() => setOpen((v) => !v)}>
-          + Add exercise
+          + {t("add_exercise")}
         </Button>
       </section>
 
       {open ? (
         <Card className="!p-5 space-y-4">
           <TextField
-            label="Name"
-            placeholder="e.g. Cable Lateral Raise"
+            label={t("exercises_form_name")}
+            placeholder={t("exercises_form_name_ph")}
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
           <div className="grid grid-cols-1 gap-3">
             <TextField
-              label="Muscle group (optional)"
-              placeholder="e.g. shoulders"
+              label={t("exercises_form_muscle_optional")}
+              placeholder={t("exercises_form_muscle_ph")}
               value={muscleGroup}
               onChange={(e) => setMuscleGroup(e.target.value)}
             />
             <TextField
-              label="Equipment (optional)"
-              placeholder="e.g. cable"
+              label={t("exercises_form_equipment_optional")}
+              placeholder={t("exercises_form_equipment_ph")}
               value={equipment}
               onChange={(e) => setEquipment(e.target.value)}
             />
           </div>
           <Button onClick={() => void submit()} disabled={saving || !name.trim()}>
-            {saving ? "Saving…" : "Save exercise"}
+            {saving ? t("saving") : t("save_exercise")}
           </Button>
         </Card>
       ) : null}
 
       <Card className="!p-5 space-y-4">
         <TextField
-          label="Search"
-          placeholder="Search exercises…"
+          label={t("search")}
+          placeholder={t("search_exercises_ph")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <div className="grid grid-cols-1 gap-3">
           <Select
-            label="Muscle group"
-            options={[...muscleGroupOptions]}
+            label={t("muscle_group")}
+            options={muscleGroupOptions.map((o) => ({
+              value: o.value,
+              label: t(o.labelKey),
+            }))}
             value={filterMuscle}
             onChange={(e) =>
               setFilterMuscle(
@@ -166,8 +171,11 @@ export function ExercisesView() {
             }
           />
           <Select
-            label="Equipment"
-            options={[...equipmentOptions]}
+            label={t("equipment")}
+            options={equipmentOptions.map((o) => ({
+              value: o.value,
+              label: t(o.labelKey),
+            }))}
             value={filterEquipment}
             onChange={(e) =>
               setFilterEquipment(
@@ -180,14 +188,14 @@ export function ExercisesView() {
 
       <section className="flex flex-col gap-3">
         {loading ? (
-          <p className="text-sm text-neutral-500">Loading exercises…</p>
+          <p className="text-sm text-neutral-500">{t("exercises_loading")}</p>
         ) : items.length === 0 ? (
           <Card className="!p-5 space-y-1">
             <p className="text-sm font-semibold text-neutral-50">
-              No exercises yet
+              {t("exercises_none_title")}
             </p>
             <p className="text-sm text-neutral-500">
-              Add an exercise to build your library.
+              {t("exercises_none_body")}
             </p>
           </Card>
         ) : (
@@ -218,17 +226,17 @@ export function ExercisesView() {
                   }}
                   className="shrink-0 rounded-lg border border-amber-500/50 bg-amber-500/10 px-2.5 py-2 text-xs font-semibold text-amber-900 active:opacity-90 dark:border-amber-400/40 dark:bg-amber-500/15 dark:text-amber-100"
                 >
-                  {e.isFavorite ? "★ Favorite" : "☆ Favorite"}
+                  {e.isFavorite ? `★ ${t("favorite")}` : `☆ ${t("favorite")}`}
                 </button>
               </Card>
             ))}
             {filtered.length === 0 ? (
               <Card className="!p-5 space-y-1">
                 <p className="text-sm font-semibold text-neutral-50">
-                  No matches
+                  {t("exercises_no_matches_title")}
                 </p>
                 <p className="text-sm text-neutral-500">
-                  Try a different search or clear filters.
+                  {t("exercises_no_matches_body")}
                 </p>
               </Card>
             ) : null}

@@ -9,7 +9,8 @@ import { Card } from "@/components/ui/Card";
 import { TextArea } from "@/components/ui/TextArea";
 import { TextField } from "@/components/ui/TextField";
 import { createId } from "@/lib/id";
-import { setVolumeFor } from "@/lib/workoutSetQuick";
+import { setVolumeForWithMultiplier } from "@/lib/workoutSetQuick";
+import { db } from "@/db/database";
 import {
   datetimeLocalValueToIso,
   isoToDatetimeLocalValue,
@@ -17,8 +18,10 @@ import {
 } from "@/lib/workoutChronology";
 import { getWorkoutSessionById, saveWorkoutSessionDraft } from "@/db/workoutSessions";
 import type { WorkoutExercise, WorkoutSession } from "@/types/trainingDiary";
+import { useI18n } from "@/i18n/LocaleContext";
 
 export function EditWorkoutView({ id }: { id: string }) {
+  const { t } = useI18n();
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -29,6 +32,7 @@ export function EditWorkoutView({ id }: { id: string }) {
   const [notes, setNotes] = useState("");
   const [date, setDate] = useState<string>("");
   const [workoutExercises, setWorkoutExercises] = useState<WorkoutExercise[]>([]);
+  const [dumbbellIds, setDumbbellIds] = useState<Set<string>>(new Set());
   const [editingExerciseId, setEditingExerciseId] = useState<string | null>(null);
   const [workoutDetailsOpen, setWorkoutDetailsOpen] = useState(false);
   const [performedAtLocal, setPerformedAtLocal] = useState("");
@@ -108,6 +112,16 @@ export function EditWorkoutView({ id }: { id: string }) {
             sets: ex.sets.map((s) => ({ ...s })),
           })),
         );
+
+        const ids = row.exercises.map((e) => e.exerciseId).filter(Boolean) as string[];
+        if (ids.length) {
+          const rows = await db.exercises.bulkGet(ids);
+          const next = new Set<string>();
+          for (const r of rows) {
+            if (r?.equipmentTags?.includes("dumbbell")) next.add(r.id);
+          }
+          if (mounted) setDumbbellIds(next);
+        }
       } finally {
         if (mounted) setLoading(false);
       }
@@ -123,13 +137,21 @@ export function EditWorkoutView({ id }: { id: string }) {
       (sum, ex) =>
         sum +
         ex.sets.reduce(
-          (s, set) => s + Math.max(0, set.weight || 0) * Math.max(0, set.reps || 0),
+          (s, set) => s + Math.max(0, set.volume ?? 0),
           0,
         ),
       0,
     );
     return { totalSets, totalVolume };
   }, [workoutExercises]);
+
+  function volumeMultiplierForExercise(ex: WorkoutExercise): number {
+    const id = ex.exerciseId?.trim();
+    if (id && dumbbellIds.has(id)) return 2;
+    const s = (ex.name ?? "").toLowerCase();
+    if (s.includes("dumbbell")) return 2;
+    return 1;
+  }
 
   function updateExercise(exerciseId: string, patch: Partial<WorkoutExercise>) {
     setWorkoutExercises((prev) =>
@@ -180,7 +202,7 @@ export function EditWorkoutView({ id }: { id: string }) {
       const last = ex.sets[ex.sets.length - 1];
       const weight = last?.weight ?? 0;
       const reps = last?.reps ?? 0;
-      const volume = setVolumeFor(weight, reps);
+      const volume = setVolumeForWithMultiplier(weight, reps, volumeMultiplierForExercise(ex));
       pendingSetFocusRef.current = {
         exerciseId,
         setId: newId,
@@ -218,7 +240,7 @@ export function EditWorkoutView({ id }: { id: string }) {
         weight = src.weight ?? 0;
         reps = src.reps ?? 0;
       }
-      const volume = setVolumeFor(weight, reps);
+      const volume = setVolumeForWithMultiplier(weight, reps, volumeMultiplierForExercise(ex));
       pendingSetFocusRef.current = {
         exerciseId,
         setId: newId,
@@ -255,13 +277,14 @@ export function EditWorkoutView({ id }: { id: string }) {
     setWorkoutExercises((prev) =>
       prev.map((ex) => {
         if (ex.id !== exerciseId) return ex;
+        const mult = volumeMultiplierForExercise(ex);
         return {
           ...ex,
           sets: ex.sets.map((s) => {
             if (s.id !== setId) return s;
             const weight = patch.weight !== undefined ? patch.weight : s.weight ?? 0;
             const reps = patch.reps !== undefined ? patch.reps : s.reps ?? 0;
-            const volume = Math.max(0, weight || 0) * Math.max(0, reps || 0);
+            const volume = setVolumeForWithMultiplier(weight, reps, mult);
             const merged = { ...s, ...patch, weight, reps, volume };
             if (patch.isDone === false) {
               merged.completedAt = undefined;
@@ -281,7 +304,7 @@ export function EditWorkoutView({ id }: { id: string }) {
       const turningOff = s.isDone === true;
       const weight = s.weight ?? 0;
       const reps = s.reps ?? 0;
-      const volume = Math.max(0, weight) * Math.max(0, reps);
+      const volume = setVolumeForWithMultiplier(weight, reps, volumeMultiplierForExercise(ex));
       const nextSets = ex.sets.map((x) => {
         if (x.id !== setId) return x;
         if (turningOff) {
@@ -321,7 +344,7 @@ export function EditWorkoutView({ id }: { id: string }) {
         performedAt: performedChanged
           ? datetimeLocalValueToIso(performedAtLocal)
           : undefined,
-        title: title.trim() || "Workout",
+        title: title.trim() || t("workout_default_title"),
         durationMin:
           typeof durationMin === "number" && Number.isFinite(durationMin)
             ? durationMin
@@ -343,11 +366,11 @@ export function EditWorkoutView({ id }: { id: string }) {
             href={`/workout/${id}`}
             className="text-sm text-neutral-500"
           >
-            Back
+            {t("exercise_progress_back").replace("← ", "")}
           </Link>
-          <h1 className="text-2xl font-semibold text-neutral-100">Edit workout</h1>
+          <h1 className="text-2xl font-semibold text-neutral-100">{t("edit_workout")}</h1>
         </header>
-        <p className="text-sm text-neutral-500">Loading…</p>
+        <p className="text-sm text-neutral-500">{t("loading")}</p>
       </main>
     );
   }
@@ -360,14 +383,14 @@ export function EditWorkoutView({ id }: { id: string }) {
             href="/history"
             className="text-sm text-neutral-500"
           >
-            Back
+            {t("exercise_progress_back").replace("← ", "")}
           </Link>
-          <h1 className="text-2xl font-semibold text-neutral-100">Edit workout</h1>
+          <h1 className="text-2xl font-semibold text-neutral-100">{t("edit_workout")}</h1>
         </header>
         <Card className="space-y-1">
-          <p className="text-sm font-semibold text-neutral-200">Not found</p>
+          <p className="text-sm font-semibold text-neutral-200">{t("not_found")}</p>
           <p className="text-sm text-neutral-500">
-            This workout doesn’t exist (or was deleted).
+            {t("workout_not_found")}
           </p>
         </Card>
       </main>
@@ -384,26 +407,26 @@ export function EditWorkoutView({ id }: { id: string }) {
               className="flex min-h-11 min-w-11 items-center text-sm text-neutral-500 transition hover:text-neutral-300"
               onClick={closeExerciseEditor}
             >
-              Back
+              {t("exercise_progress_back").replace("← ", "")}
             </button>
             <h1 className="line-clamp-2 min-w-0 flex-1 break-words px-2 text-center text-2xl font-semibold leading-tight text-neutral-100">
               {editingExercise?.name?.trim()
                 ? editingExercise.name
-                : "Exercise"}
+                : t("exercise")}
             </h1>
             <button
               type="button"
               className="flex min-h-11 min-w-11 items-center justify-end text-sm font-medium text-primary"
               onClick={closeExerciseEditor}
             >
-              Done
+              {t("done")}
             </button>
           </header>
 
         <Card className="!mt-0 !space-y-3 !p-4">
           <TextField
-            label="Name"
-            placeholder="Exercise name"
+            label={t("exercises_form_name")}
+            placeholder={t("exercise_name")}
             value={editingExercise.name}
             onChange={(e) => updateExercise(editingExercise.id, { name: e.target.value })}
           />
@@ -414,51 +437,60 @@ export function EditWorkoutView({ id }: { id: string }) {
                 variant="editorSecondary"
                 onClick={() => addSameSet(editingExercise.id)}
               >
-                + Same set
+                {t("same_set")}
               </Button>
               <Button
                 variant="editorSecondary"
                 onClick={() => addEmptySet(editingExercise.id)}
               >
-                + Empty set
+                {t("empty_set")}
               </Button>
             </div>
             <Button
               variant="editorUtility"
               onClick={() => addSetCopyingSecondToLast(editingExercise.id)}
             >
-              Copy previous
+              {t("copy_previous")}
             </Button>
           </div>
 
           {editingExercise.sets.length === 0 ? (
-            <p className="text-sm text-neutral-500">No sets yet.</p>
+            <p className="text-sm text-neutral-500">{t("no_sets_yet")}</p>
           ) : (
-            <div className="flex flex-col gap-3">
-              {editingExercise.sets.map((set, idx) => (
-                <ExerciseSetRow
-                  key={set.id}
-                  set={set}
-                  index1={idx + 1}
-                  weightInputId={`eset-w-${set.id}`}
-                  repsInputId={`eset-r-${set.id}`}
-                  onDelete={() => deleteSet(editingExercise.id, set.id)}
-                  onChangeWeight={(v) =>
-                    updateSet(editingExercise.id, set.id, { weight: v })
-                  }
-                  onChangeReps={(v) =>
-                    updateSet(editingExercise.id, set.id, { reps: v })
-                  }
-                  onToggleDone={() =>
-                    toggleSetDone(editingExercise.id, set.id)
-                  }
-                />
-              ))}
+            <div className="space-y-3">
+              <div className="grid items-center gap-2 border-b border-[#2A2A2A] px-3 pb-2 text-xs font-semibold text-[#9CA3AF] [grid-template-columns:64px_minmax(78px,1fr)_64px_48px_32px]">
+                <span>{t("set_editor_header_set")}</span>
+                <span>{t("set_editor_header_weight_kg")}</span>
+                <span>{t("set_editor_header_reps")}</span>
+                <span className="text-center">{t("set_editor_header_done")}</span>
+                <span />
+              </div>
+              <div className="flex flex-col gap-3">
+                {editingExercise.sets.map((set, idx) => (
+                  <ExerciseSetRow
+                    key={set.id}
+                    set={set}
+                    index1={idx + 1}
+                    weightInputId={`eset-w-${set.id}`}
+                    repsInputId={`eset-r-${set.id}`}
+                    onDelete={() => deleteSet(editingExercise.id, set.id)}
+                    onChangeWeight={(v) =>
+                      updateSet(editingExercise.id, set.id, { weight: v })
+                    }
+                    onChangeReps={(v) =>
+                      updateSet(editingExercise.id, set.id, { reps: v })
+                    }
+                    onToggleDone={() =>
+                      toggleSetDone(editingExercise.id, set.id)
+                    }
+                  />
+                ))}
+              </div>
             </div>
           )}
 
           <div className="flex items-baseline justify-between border-t border-neutral-800/80 pt-2.5">
-            <span className="text-sm text-neutral-500">Volume (kg)</span>
+            <span className="text-sm text-neutral-500">{t("volume_kg")}</span>
             <span className="text-lg font-medium tabular-nums text-neutral-100">
               {Math.round(
                 editingExercise.sets.reduce(
@@ -477,15 +509,15 @@ export function EditWorkoutView({ id }: { id: string }) {
               href={`/workout/${id}`}
               className="text-sm text-neutral-500 transition hover:text-neutral-300"
             >
-              Back
+              {t("exercise_progress_back").replace("← ", "")}
             </Link>
             <h1 className="text-2xl font-semibold leading-tight text-neutral-100">
-              Edit workout
+              {t("edit_workout")}
             </h1>
           </header>
 
           <TextField
-            label="Title"
+            label={t("title")}
             placeholder="e.g. Upper A"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -507,7 +539,7 @@ export function EditWorkoutView({ id }: { id: string }) {
                     >
                       <div className="min-w-0 flex-1">
                         <p className="flex items-baseline justify-between gap-2 truncate text-lg font-semibold text-neutral-100">
-                          <span className="truncate">{ex.name || "Exercise"}</span>
+                          <span className="truncate">{ex.name || t("exercise")}</span>
                           <span
                             className="shrink-0 text-primary/80"
                             aria-hidden
@@ -516,7 +548,7 @@ export function EditWorkoutView({ id }: { id: string }) {
                           </span>
                         </p>
                         <p className="mt-0.5 text-sm text-neutral-500">
-                          {ex.sets.length} set{ex.sets.length === 1 ? "" : "s"}{" "}
+                          {ex.sets.length} {t("label_sets")}{" "}
                           · {Math.round(exVolume * 100) / 100} kg
                         </p>
                       </div>
@@ -527,7 +559,7 @@ export function EditWorkoutView({ id }: { id: string }) {
                         onClick={() => deleteExercise(ex.id)}
                         className="flex h-full min-h-11 min-w-[3.25rem] items-center justify-center px-1 text-sm text-neutral-500 transition active:text-neutral-400"
                       >
-                        Remove
+                        {t("remove")}
                       </button>
                     </div>
                   </div>
@@ -535,12 +567,12 @@ export function EditWorkoutView({ id }: { id: string }) {
               );
             })}
             {workoutExercises.length === 0 ? (
-              <p className="text-sm text-neutral-400">No exercises yet. Add one below.</p>
+              <p className="text-sm text-neutral-400">{t("no_exercises_yet_add_below")}</p>
             ) : null}
           </div>
 
           <div>
-            <Button onClick={addExercise}>+ Add exercise</Button>
+            <Button onClick={addExercise}>+ {t("add_exercise")}</Button>
           </div>
 
           <div className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900">
@@ -552,7 +584,7 @@ export function EditWorkoutView({ id }: { id: string }) {
               onClick={() => setWorkoutDetailsOpen((o) => !o)}
               className="flex min-h-11 w-full items-center justify-between gap-2 px-4 py-3 text-left text-sm font-medium text-neutral-200 transition active:opacity-90"
             >
-              <span>Workout details</span>
+              <span>{t("workout_details")}</span>
               <span
                 className="shrink-0 text-xs text-neutral-500"
                 aria-hidden
@@ -571,21 +603,21 @@ export function EditWorkoutView({ id }: { id: string }) {
             >
               <div className="space-y-3 p-4 pt-3">
                 <TextField
-                  label="Performed at"
+                  label={t("performed_at")}
                   type="datetime-local"
                   value={performedAtLocal}
                   onChange={(e) => setPerformedAtLocal(e.target.value)}
                 />
                 <TextField
-                  label="Duration (min)"
+                  label={t("duration_min")}
                   inputMode="numeric"
                   placeholder="e.g. 60"
                   value={durationMinText}
                   onChange={(e) => setDurationMinText(e.target.value)}
                 />
                 <TextArea
-                  label="Notes"
-                  placeholder="Optional"
+                  label={t("notes")}
+                  placeholder={t("optional")}
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                 />
@@ -597,13 +629,13 @@ export function EditWorkoutView({ id }: { id: string }) {
 
       <Card className="!py-3 !space-y-1.5">
         <div className="flex items-baseline justify-between">
-          <span className="text-sm text-neutral-500">Sets</span>
+          <span className="text-sm text-neutral-500">{t("sets")}</span>
           <span className="text-lg font-medium tabular-nums text-neutral-100">
             {totals.totalSets}
           </span>
         </div>
         <div className="flex items-baseline justify-between">
-          <span className="text-sm text-neutral-500">Volume (kg)</span>
+          <span className="text-sm text-neutral-500">{t("volume_kg")}</span>
           <span className="text-lg font-medium tabular-nums text-neutral-100">
             {Math.round(totals.totalVolume * 100) / 100}
           </span>
@@ -612,14 +644,14 @@ export function EditWorkoutView({ id }: { id: string }) {
 
       <div className="space-y-2">
         <Button onClick={() => void save()} disabled={saving}>
-          {saving ? "Saving…" : "Save changes"}
+          {saving ? t("saving") : t("save_changes")}
         </Button>
         <Button
           variant="ghost"
           onClick={() => router.push(`/workout/${id}`)}
           disabled={saving}
         >
-          Cancel
+          {t("cancel")}
         </Button>
       </div>
     </main>

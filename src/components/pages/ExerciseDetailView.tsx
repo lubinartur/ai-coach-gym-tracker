@@ -7,12 +7,14 @@ import { db } from "@/db/database";
 import { updateExercise } from "@/db/exercises";
 import type { Exercise } from "@/types/trainingDiary";
 import { getExerciseStats } from "@/services/exerciseStats";
+import { useI18n } from "@/i18n/LocaleContext";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
 export function ExerciseDetailView({ id }: { id: string }) {
+  const { t } = useI18n();
   const [exercise, setExercise] = useState<Exercise | null>(null);
   const [loading, setLoading] = useState(true);
   const [statsLoading, setStatsLoading] = useState(false);
@@ -62,11 +64,11 @@ export function ExerciseDetailView({ id }: { id: string }) {
           href="/exercises"
           className="inline-block text-sm font-medium text-neutral-400 underline-offset-2 hover:text-neutral-200"
         >
-          Exercises
+          {t("exercises_title")}
         </Link>
         <div>
           <h1 className="text-2xl font-bold text-neutral-50">
-            {exercise?.name ?? "Exercise"}
+            {exercise?.name ?? t("exercise")}
           </h1>
           {metaLine ? (
             <p className="mt-0.5 text-sm text-neutral-400">{metaLine}</p>
@@ -86,18 +88,20 @@ export function ExerciseDetailView({ id }: { id: string }) {
               })();
             }}
           >
-            {exercise.isFavorite ? "★ Favorited" : "☆ Add to favorites"}
+            {exercise.isFavorite
+              ? `★ ${t("exercise_favorited")}`
+              : `☆ ${t("exercise_add_to_favorites")}`}
           </button>
         ) : null}
       </header>
 
       {loading ? (
-        <p className="text-sm text-neutral-500">Loading…</p>
+        <p className="text-sm text-neutral-500">{t("loading")}</p>
       ) : !exercise ? (
         <Card className="!py-3 !space-y-1">
-          <p className="text-sm font-semibold text-neutral-100">Not found</p>
+          <p className="text-sm font-semibold text-neutral-100">{t("not_found")}</p>
           <p className="text-sm text-neutral-400">
-            This exercise doesn’t exist (or was deleted).
+            {t("exercise_not_found")}
           </p>
         </Card>
       ) : (
@@ -105,7 +109,7 @@ export function ExerciseDetailView({ id }: { id: string }) {
           <Card className="!space-y-0 divide-y divide-neutral-800/80 !p-0">
             {[
               {
-                label: "Best set",
+                label: t("exercise_best_set"),
                 value: statsLoading
                   ? "…"
                   : bestSet
@@ -113,11 +117,13 @@ export function ExerciseDetailView({ id }: { id: string }) {
                     : "—",
               },
               {
-                label: "Total volume",
-                value: statsLoading ? "…" : `${round2(totalVolume)} kg`,
+                label: t("stat_total_volume"),
+                value: statsLoading
+                  ? "…"
+                  : `${round2(totalVolume)} ${t("stat_unit_kg")}`,
               },
               {
-                label: "Total sets (all time)",
+                label: t("exercise_total_sets_all_time"),
                 value: statsLoading ? "…" : String(totalSets),
               },
             ].map((row) => (
@@ -134,14 +140,14 @@ export function ExerciseDetailView({ id }: { id: string }) {
           </Card>
 
           <section>
-            <h2 className="text-sm font-medium text-neutral-400">Last 5 sessions</h2>
+            <h2 className="text-sm font-medium text-neutral-400">{t("exercise_last_5_sessions")}</h2>
             {statsLoading ? (
-              <p className="mt-2 text-sm text-neutral-500">Loading…</p>
+              <p className="mt-2 text-sm text-neutral-500">{t("loading")}</p>
             ) : recent.length === 0 ? (
               <Card className="!mt-2 !py-3 !space-y-1">
-                <p className="text-sm text-neutral-300">No history yet</p>
+                <p className="text-sm text-neutral-300">{t("no_history_yet")}</p>
                 <p className="text-sm text-neutral-500">
-                  Log this exercise in a saved workout to see it here.
+                  {t("exercise_history_hint")}
                 </p>
               </Card>
             ) : (
@@ -152,11 +158,11 @@ export function ExerciseDetailView({ id }: { id: string }) {
                       <div className="flex items-baseline justify-between gap-2">
                         <p className="text-sm font-medium text-neutral-200">{r.date}</p>
                         <p className="shrink-0 text-sm font-semibold tabular-nums text-neutral-200">
-                          {round2(r.volume)} kg
+                          {round2(r.volume)} {t("stat_unit_kg")}
                         </p>
                       </div>
                       <p className="text-xs text-neutral-500">
-                        {r.sets.length} set{r.sets.length === 1 ? "" : "s"} · {r.title}
+                        {r.sets.length} {t("label_sets")} · {r.title}
                       </p>
                       <p className="text-sm text-neutral-300">
                         {r.sets.map((s) => `${s.weight}×${s.reps}`).join(" · ")}

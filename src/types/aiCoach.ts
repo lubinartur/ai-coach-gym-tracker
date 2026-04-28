@@ -401,17 +401,25 @@ export type WorkoutAiReview = {
 export type WorkoutReviewRequestPayload = {
   /** UI language: all coach copy (summary, bullets, note text) must match. `"en"` or `"ru"`. */
   language?: AppLanguage;
+  /** Explicit UI locale override from the client (preferred over `language` when present). */
+  locale?: AppLanguage;
   /** Same shape as suggest-next; only defined fields. */
   athleteProfile: Record<string, unknown>;
   completedSession: {
     id: string;
     date: string;
     title: string;
+    /** Intent / session type inferred from the workout itself. */
+    workoutMode?: "single_muscle" | "split" | "full_body" | "custom";
+    /** Best-effort target muscles (e.g. ["biceps"]). */
+    targetMuscles?: string[];
     durationMin?: number;
     totalVolume: number;
     totalSets: number;
     exercises: {
       name: string;
+      muscleGroup?: string;
+      equipment?: string;
       sets: {
         weight: number;
         reps: number;

@@ -65,7 +65,7 @@ function computeSessionAnalytics(session: WorkoutSession) {
 }
 
 export function WorkoutDetailView({ id }: { id: string }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const router = useRouter();
   const [session, setSession] = useState<WorkoutSession | null>(null);
   const [loading, setLoading] = useState(true);
@@ -110,7 +110,11 @@ export function WorkoutDetailView({ id }: { id: string }) {
       const res = await fetch("/api/ai-coach/review-workout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          ...payload,
+          locale,
+          language: locale,
+        }),
       });
       const data = (await res.json()) as
         | WorkoutAiReview
@@ -200,19 +204,19 @@ export function WorkoutDetailView({ id }: { id: string }) {
               href="/history"
               className="text-sm font-medium text-neutral-400 underline-offset-2 hover:text-neutral-200"
             >
-              Back to History
+              {t("back_to_history")}
             </Link>
             {session ? (
               <>
                 <h1 className="text-2xl font-bold text-neutral-50">
-                  {session.title.trim() || "Workout"}
+                  {session.title.trim() || t("workout_default_title")}
                 </h1>
                 <p className="text-sm text-neutral-400">{session.date}</p>
               </>
             ) : (
               <>
-                <h1 className="text-2xl font-bold text-neutral-50">Workout</h1>
-                <p className="text-sm text-neutral-400">Details</p>
+                <h1 className="text-2xl font-bold text-neutral-50">{t("workout_default_title")}</h1>
+                <p className="text-sm text-neutral-400">{t("details")}</p>
               </>
             )}
           </div>
@@ -274,7 +278,7 @@ export function WorkoutDetailView({ id }: { id: string }) {
                 }}
                 disabled={deleteLoading}
               >
-                {deleteLoading ? "…" : t("workout_delete_action")}
+                {deleteLoading ? t("em_dash") : t("workout_delete_action")}
               </Button>
             </div>
           </div>
@@ -282,35 +286,35 @@ export function WorkoutDetailView({ id }: { id: string }) {
       ) : null}
 
       {loading ? (
-        <p className="text-sm text-neutral-400">Loading workout…</p>
+        <p className="text-sm text-neutral-400">{t("loading_workout")}</p>
       ) : !session ? (
         <Card className="space-y-1">
-          <p className="text-sm font-semibold text-neutral-100">Not found</p>
+          <p className="text-sm font-semibold text-neutral-100">{t("not_found")}</p>
           <p className="text-sm text-neutral-400">
-            This workout doesn’t exist (or was deleted).
+            {t("workout_not_found")}
           </p>
         </Card>
       ) : (
         <>
           <div>
             <Link href={`/workout/${id}/edit`} className="block">
-              <Button className="!min-h-[52px]">Edit workout</Button>
+              <Button className="!min-h-[52px]">{t("edit_workout")}</Button>
             </Link>
           </div>
 
           {analytics ? (
             <section>
               <h2 className="text-sm font-medium text-neutral-400">
-                Session analytics
+                {t("session_stats")}
               </h2>
               <div className="mt-2 w-full min-w-0 rounded-2xl border border-neutral-800 bg-neutral-900 p-4">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="min-w-0">
                     <p className="break-words text-2xl font-semibold text-white tabular-nums">
-                      {formatKg(session.totalVolume)} kg
+                      {formatKg(session.totalVolume)} {t("stat_unit_kg")}
                     </p>
                     <p className="mt-0.5 text-xs uppercase text-neutral-500">
-                      Total Volume
+                      {t("stat_total_volume")}
                     </p>
                   </div>
                   <div className="min-w-0">
@@ -318,7 +322,7 @@ export function WorkoutDetailView({ id }: { id: string }) {
                       {session.totalSets}
                     </p>
                     <p className="mt-0.5 text-xs uppercase text-neutral-500">
-                      Sets
+                      {t("sets")}
                     </p>
                   </div>
                   <div className="min-w-0">
@@ -326,28 +330,28 @@ export function WorkoutDetailView({ id }: { id: string }) {
                       {session.exercises.length}
                     </p>
                     <p className="mt-0.5 text-xs uppercase text-neutral-500">
-                      Exercises
+                      {t("exercises")}
                     </p>
                   </div>
                   <div className="min-w-0">
                     <p className="text-2xl font-semibold text-white">
                       {typeof session.durationMin === "number" &&
                       Number.isFinite(session.durationMin)
-                        ? `${session.durationMin} min`
+                        ? `${session.durationMin} ${t("minutes_short")}`
                         : "—"}
                     </p>
                     <p className="mt-0.5 text-xs uppercase text-neutral-500">
-                      Duration
+                      {t("duration_label")}
                     </p>
                   </div>
                 </div>
 
                 <div className="mt-4 min-w-0 border-t border-neutral-800 pt-4">
-                  <p className="text-xs uppercase text-neutral-500">Highlights</p>
+                  <p className="text-xs uppercase text-neutral-500">{t("highlights")}</p>
                   <div className="mt-3 space-y-3">
                     <div className="min-w-0">
                       <p className="text-xs uppercase text-neutral-500">
-                        Heaviest set
+                        {t("heaviest_set")}
                       </p>
                       {analytics.heaviest ? (
                         <p
@@ -362,18 +366,18 @@ export function WorkoutDetailView({ id }: { id: string }) {
                     </div>
                     <div className="min-w-0">
                       <p className="text-xs uppercase text-neutral-500">
-                        Top exercise
+                        {t("top_exercise")}
                       </p>
                       {analytics.topExercise ? (
                         <p
                           className="mt-0.5 truncate text-base font-semibold text-white"
                           title={`${analytics.topExercise.name} · ${formatKg(
                             analytics.topExercise.vol,
-                          )} kg`}
+                          )} ${t("stat_unit_kg")}`}
                         >
                           {`${analytics.topExercise.name} · ${formatKg(
                             analytics.topExercise.vol,
-                          )} kg`}
+                          )} ${t("stat_unit_kg")}`}
                         </p>
                       ) : (
                         <p className="mt-0.5 text-base font-semibold text-white">—</p>
@@ -440,7 +444,7 @@ export function WorkoutDetailView({ id }: { id: string }) {
                       {ex.name}
                     </p>
                     <p className="mt-0.5 text-sm text-neutral-400">
-                      {nSets} set{nSets === 1 ? "" : "s"} · {formatKg(exVolume)} kg
+                      {nSets} {t("label_sets")} · {formatKg(exVolume)} {t("stat_unit_kg")}
                     </p>
                   </div>
                   <div className="flex flex-col gap-2">
@@ -450,11 +454,11 @@ export function WorkoutDetailView({ id }: { id: string }) {
                         className="flex items-center justify-between gap-2 rounded-lg border border-neutral-800 bg-neutral-950/50 px-3 py-2 text-sm"
                       >
                         <span className="flex items-center gap-2 text-neutral-500">
-                          Set {idx + 1}
+                          {t("set")} {idx + 1}
                           {set.isDone ? (
                             <span
                               className="text-xs font-medium text-emerald-400/90"
-                              title="Logged"
+                              title={t("logged")}
                             >
                               ✓
                             </span>
