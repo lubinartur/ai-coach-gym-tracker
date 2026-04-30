@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, ChevronRight, Dumbbell, Flame, Layers, Play, Repeat2, Trash2, Wand2 } from "lucide-react";
 import { ExerciseSetRow } from "@/components/workout/ExerciseSetRow";
@@ -50,6 +51,7 @@ import { saveAiDecisionTrace } from "@/db/aiDecisionTrace";
 import { validateAiCoachSuggestion } from "@/lib/aiCoachQualityCheck";
 import { buildAiCoachRequestPayload } from "@/services/aiCoachContext";
 import { useAthleteProfile } from "@/hooks/useAthleteProfile";
+import { inferWorkoutTitleFromExercises } from "@/lib/workoutTitleInference";
 
 type WorkoutMode = "idle" | "active";
 
@@ -73,6 +75,7 @@ const TEMPLATE_META_CLASS = "mt-1 text-xs tabular-nums text-neutral-600";
 
 export function WorkoutView() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { t, locale } = useI18n();
   const { profile } = useAthleteProfile();
   const [mode, setMode] = useState<WorkoutMode>("idle");
@@ -120,6 +123,13 @@ export function WorkoutView() {
   const [customFocus, setCustomFocus] = useState<string | null>(null);
   const [customGenerating, setCustomGenerating] = useState(false);
   const [customPreviewOpen, setCustomPreviewOpen] = useState(false);
+
+  useEffect(() => {
+    // Quick-start entrypoint: allow Today screen to jump straight into the custom workout builder.
+    if (searchParams?.get("custom") === "1") {
+      setCustomBuilderOpen(true);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     const onPop = (e: PopStateEvent) => {
@@ -1261,7 +1271,12 @@ export function WorkoutView() {
                       Last workout
                     </p>
                     <p className="mt-1 text-base font-semibold text-neutral-100">
-                      {mostRecentSession.title.trim() || t("workout_default_title")}
+                      {inferWorkoutTitleFromExercises({
+                        currentTitle: mostRecentSession.title,
+                        exercises: mostRecentSession.exercises,
+                        catalog: exercises,
+                        workoutGoal: "general_fitness",
+                      }).inferredTitle.trim() || t("workout_default_title")}
                     </p>
                     {quickStartLastText ? (
                       <p className="mt-1 text-sm text-neutral-500">{quickStartLastText}</p>

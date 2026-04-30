@@ -403,6 +403,11 @@ export type WorkoutReviewRequestPayload = {
   language?: AppLanguage;
   /** Explicit UI locale override from the client (preferred over `language` when present). */
   locale?: AppLanguage;
+  /**
+   * Primary intent for how the coach should evaluate the session.
+   * This is a simplified, review-only goal (distinct from the onboarding profile goal enum).
+   */
+  workoutGoal?: "hypertrophy" | "strength" | "fat_loss" | "general_fitness";
   /** Same shape as suggest-next; only defined fields. */
   athleteProfile: Record<string, unknown>;
   completedSession: {

@@ -1077,7 +1077,7 @@ function finalizeResponse(
   };
 }
 
-export function getFallbackNextWorkoutSuggestion(): SuggestNextWorkoutResponse {
+export function getFallbackNextWorkoutSuggestion(input?: AiCoachRequestPayload): SuggestNextWorkoutResponse {
   const full = QUICK_WORKOUT_TEMPLATES.find((t) => t.id === "full");
   const names = full
     ? [...full.exercises].slice(0, 5)
@@ -1088,13 +1088,20 @@ export function getFallbackNextWorkoutSuggestion(): SuggestNextWorkoutResponse {
         "Romanian Deadlift",
         "Dumbbell Shoulder Press",
       ];
+  const useInput = input ?? null;
+  const isNew = useInput ? isNewUserPayload(useInput) : true;
   const exercises: SuggestNextWorkoutResponse["exercises"] = names.map((name) => ({
     name,
-    sets: [
-      { weight: 20, reps: 10 },
-      { weight: 20, reps: 10 },
-      { weight: 20, reps: 10 },
-    ],
+    // Important: avoid the generic 20kg fallback when history or calibration exists.
+    // We reuse the same default-load logic as the normal skeleton path:
+    // history baseline → calibration → conservative placeholder.
+    sets: useInput
+      ? buildDefaultWorkingSetsForExercise(name, useInput, { isNewUser: isNew })
+      : [
+          { weight: 20, reps: 10 },
+          { weight: 20, reps: 10 },
+          { weight: 20, reps: 10 },
+        ],
     decision: "maintain",
     decision_label: DEFAULT_DECISION_LABEL.maintain,
     reason: cap("Default from the in-app full-body template.", MAX_EXERCISE_REASON),

@@ -26,6 +26,7 @@ import { buildTrainingConsistencyAnalytics } from "@/lib/analytics/consistency";
 import { buildCanonicalMuscleVolumeAnalytics } from "@/lib/analytics/muscleVolume";
 import type { MuscleVolumeWindow } from "@/lib/analytics/muscleVolume";
 import { buildStrengthSeries } from "@/lib/analytics/strengthSeries";
+import { inferWorkoutTitleFromExercises } from "@/lib/workoutTitleInference";
 import type { Exercise, WorkoutSession } from "@/types/trainingDiary";
 
 function round2(n: number): number {
@@ -108,7 +109,7 @@ function pickExerciseIdForLiftRow(
   return null;
 }
 
-export function HistoryView() {
+export function HistoryView({ mode = "history" }: { mode?: "history" | "progress" }) {
   const { t, locale } = useI18n();
   const [items, setItems] = useState<WorkoutSession[]>([]);
   const [catalog, setCatalog] = useState<Exercise[]>([]);
@@ -473,47 +474,54 @@ export function HistoryView() {
             </div>
           </section>
 
-          <section>
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              {t("workout_history_title")}
-            </h2>
-            {items.length === 0 ? (
-              <p className="mt-2 text-sm text-neutral-400">
-                {t("no_workouts_yet")}
-              </p>
-            ) : (
-              <div className="mt-2 flex flex-col gap-3">
-                {displayItems.map((w) => {
-                  const nEx = w.exercises.length;
-                  const hasDur =
-                    typeof w.durationMin === "number" && Number.isFinite(w.durationMin);
-                  return (
-                    <Link key={w.id} href={`/workout/${w.id}`} className="block">
-                      <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-4 text-neutral-100 transition-opacity active:opacity-90">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                          {formatWorkoutHistoryDateTime(w)}
-                        </p>
-                        <p className="mt-0.5 text-base font-semibold text-neutral-100">
-                          {w.title.trim() || t("workout_default_title")}
-                        </p>
-                        <p className="mt-1.5 text-sm text-neutral-400">
-                          {t("duration_label")}:{" "}
-                          {hasDur
-                            ? `${w.durationMin} ${t("min_short")}`
-                            : t("duration_emdash")}
-                        </p>
-                        <p className="mt-1 text-sm text-neutral-300">
-                          {nEx} {t("label_exercises")} · {w.totalSets}{" "}
-                          {t("label_sets")} · {formatKgDisplay(w.totalVolume, locale)}{" "}
-                          {t("stat_unit_kg")}
-                        </p>
-                      </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </section>
+          {mode === "history" ? (
+            <section>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                {t("workout_history_title")}
+              </h2>
+              {items.length === 0 ? (
+                <p className="mt-2 text-sm text-neutral-400">
+                  {t("no_workouts_yet")}
+                </p>
+              ) : (
+                <div className="mt-2 flex flex-col gap-3">
+                  {displayItems.map((w) => {
+                    const nEx = w.exercises.length;
+                    const hasDur =
+                      typeof w.durationMin === "number" && Number.isFinite(w.durationMin);
+                    return (
+                      <Link key={w.id} href={`/workout/${w.id}`} className="block">
+                        <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-4 text-neutral-100 transition-opacity active:opacity-90">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                            {formatWorkoutHistoryDateTime(w)}
+                          </p>
+                          <p className="mt-0.5 text-base font-semibold text-neutral-100">
+                            {inferWorkoutTitleFromExercises({
+                              currentTitle: w.title,
+                              exercises: w.exercises,
+                              catalog,
+                              workoutGoal: "general_fitness",
+                            }).inferredTitle.trim() || t("workout_default_title")}
+                          </p>
+                          <p className="mt-1.5 text-sm text-neutral-400">
+                            {t("duration_label")}:{" "}
+                            {hasDur
+                              ? `${w.durationMin} ${t("min_short")}`
+                              : t("duration_emdash")}
+                          </p>
+                          <p className="mt-1 text-sm text-neutral-300">
+                            {nEx} {t("label_exercises")} · {w.totalSets}{" "}
+                            {t("label_sets")} · {formatKgDisplay(w.totalVolume, locale)}{" "}
+                            {t("stat_unit_kg")}
+                          </p>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          ) : null}
         </>
       )}
     </main>

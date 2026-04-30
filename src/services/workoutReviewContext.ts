@@ -5,6 +5,7 @@ import { listWorkoutSessions } from "@/db/workoutSessions";
 import { parseAppLanguage } from "@/i18n/language";
 import { serializeAthleteProfileForAi } from "@/lib/serializeAthleteForAi";
 import { normalizeExerciseName } from "@/lib/exerciseName";
+import { inferWorkoutTitleFromExercises } from "@/lib/workoutTitleInference";
 import {
   buildExerciseStats,
   serializeWorkoutForAi,
@@ -18,6 +19,18 @@ const MAX_SESSIONS_FOR_STATS = 20;
 type WorkoutMode = NonNullable<
   WorkoutReviewRequestPayload["completedSession"]["workoutMode"]
 >;
+
+function toWorkoutGoal(input: {
+  athleteGoal?: unknown;
+}): WorkoutReviewRequestPayload["workoutGoal"] {
+  const g = String(input.athleteGoal ?? "").trim();
+  if (g === "build_muscle") return "hypertrophy";
+  if (g === "strength") return "strength";
+  if (g === "lose_fat") return "fat_loss";
+  if (g === "general_fitness") return "general_fitness";
+  if (g === "recomposition") return "hypertrophy";
+  return "general_fitness";
+}
 
 const MUSCLE_TITLE_HINTS: { key: string; patterns: RegExp[] }[] = [
   { key: "biceps", patterns: [/\bbiceps?\b/, /\bbi[ -]?ceps?\b/, /\bбицепс\b/i] },
@@ -90,7 +103,8 @@ function inferWorkoutMode(input: {
 
 function serializeCompletedSession(
   s: WorkoutSession,
-  catalog: { name: string; muscleGroup?: string; equipment?: string }[],
+  catalog: import("@/types/trainingDiary").Exercise[],
+  workoutGoal: WorkoutReviewRequestPayload["workoutGoal"],
 ): WorkoutReviewRequestPayload["completedSession"] {
   const byNorm = new Map<string, { muscleGroup?: string; equipment?: string }>();
   for (const row of catalog) {
@@ -108,10 +122,17 @@ function serializeCompletedSession(
   }
   const { mode, targetMuscles } = inferWorkoutMode({ title: s.title, setsByMuscle });
 
+  const titleForReview = inferWorkoutTitleFromExercises({
+    currentTitle: s.title,
+    exercises: s.exercises,
+    catalog,
+    workoutGoal,
+  }).inferredTitle;
+
   return {
     id: s.id,
     date: s.date,
-    title: s.title,
+    title: titleForReview,
     workoutMode: mode,
     targetMuscles,
     durationMin: s.durationMin,
@@ -173,8 +194,13 @@ export async function buildWorkoutReviewRequestPayload(
 
   return {
     language: parseAppLanguage(settings.language),
+    workoutGoal: toWorkoutGoal({ athleteGoal: athlete.goal }),
     athleteProfile: serializeAthleteProfileForAi(athlete),
-    completedSession: serializeCompletedSession(completed, catalog),
+    completedSession: serializeCompletedSession(
+      completed,
+      catalog,
+      toWorkoutGoal({ athleteGoal: athlete.goal }),
+    ),
     priorSessions,
     exerciseStats,
     logTotals,

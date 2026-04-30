@@ -20,7 +20,7 @@ export async function POST(req: Request) {
 
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
-    const base = getFallbackNextWorkoutSuggestion();
+    const base = getFallbackNextWorkoutSuggestion(body as AiCoachRequestPayload);
     const withInsights = await enrichSuggestNextWorkoutInsights(
       base,
       body as AiCoachRequestPayload,

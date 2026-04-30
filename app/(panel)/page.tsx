@@ -1,5 +1,5 @@
-import { WorkoutView } from "@/components/pages/WorkoutView";
+import { TodayView } from "@/components/pages/TodayView";
 
 export default function TodayPage() {
-  return <WorkoutView />;
+  return <TodayView />;
 }

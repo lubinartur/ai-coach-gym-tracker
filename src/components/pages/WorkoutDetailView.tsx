@@ -19,6 +19,8 @@ import { normalizeExerciseName } from "@/services/exerciseStats";
 import type { WorkoutAiReview } from "@/types/aiCoach";
 import type { WorkoutSession } from "@/types/trainingDiary";
 import { Button } from "@/components/ui/Button";
+import { listExercises } from "@/db/exercises";
+import { inferWorkoutTitleFromExercises } from "@/lib/workoutTitleInference";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -69,6 +71,7 @@ export function WorkoutDetailView({ id }: { id: string }) {
   const router = useRouter();
   const [session, setSession] = useState<WorkoutSession | null>(null);
   const [loading, setLoading] = useState(true);
+  const [catalog, setCatalog] = useState<import("@/types/trainingDiary").Exercise[]>([]);
   const [regenerateReviewLoading, setRegenerateReviewLoading] = useState(false);
   const [regenerateReviewError, setRegenerateReviewError] = useState<string | null>(
     null,
@@ -81,8 +84,11 @@ export function WorkoutDetailView({ id }: { id: string }) {
     let mounted = true;
     (async () => {
       try {
-        const row = await getWorkoutSessionById(id);
-        if (mounted) setSession(row ?? null);
+        const [row, ex] = await Promise.all([getWorkoutSessionById(id), listExercises()]);
+        if (mounted) {
+          setSession(row ?? null);
+          setCatalog(ex);
+        }
       } finally {
         if (mounted) setLoading(false);
       }
@@ -91,6 +97,17 @@ export function WorkoutDetailView({ id }: { id: string }) {
       mounted = false;
     };
   }, [id]);
+
+  const displayTitle = useMemo(() => {
+    if (!session) return "";
+    return inferWorkoutTitleFromExercises({
+      currentTitle: session.title,
+      exercises: session.exercises,
+      catalog,
+      // Review is descriptive-only; goal isn't required for split correctness.
+      workoutGoal: "general_fitness",
+    }).inferredTitle;
+  }, [session, catalog]);
 
   const analytics = useMemo(() => {
     if (!session) return null;
@@ -209,7 +226,7 @@ export function WorkoutDetailView({ id }: { id: string }) {
             {session ? (
               <>
                 <h1 className="text-2xl font-bold text-neutral-50">
-                  {session.title.trim() || t("workout_default_title")}
+                  {(displayTitle || session.title).trim() || t("workout_default_title")}
                 </h1>
                 <p className="text-sm text-neutral-400">{session.date}</p>
               </>

@@ -1,5 +1,5 @@
 import { HistoryView } from "@/components/pages/HistoryView";
 
 export default function HistoryPage() {
-  return <HistoryView />;
+  return <HistoryView mode="history" />;
 }

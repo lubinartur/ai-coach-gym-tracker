@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Play } from "lucide-react";
 import { findBaselineForExerciseName } from "@/lib/aiCoachResponseNormalize";
+import { normalizeExerciseName } from "@/lib/exerciseName";
 import {
   buildWhyRowsFromTrainingSignalsResponse,
   findExerciseLoadDebugRow,
@@ -11,7 +12,13 @@ import {
   loadSourceMessageKey,
 } from "@/lib/aiCoachDisplay";
 import { localizeDecisionLabel } from "@/lib/aiCoachResultLabels";
-import type { AiDecisionContext, ExerciseDecision, SuggestNextWorkoutAiExercise, SuggestNextWorkoutResponse } from "@/types/aiCoach";
+import type {
+  AiDecisionContext,
+  ExerciseDecision,
+  ProgressionPlanExercise,
+  SuggestNextWorkoutAiExercise,
+  SuggestNextWorkoutResponse,
+} from "@/types/aiCoach";
 import type { Exercise } from "@/types/trainingDiary";
 import type { MessageKey } from "@/i18n/dictionary";
 import { useI18n } from "@/i18n/LocaleContext";
@@ -236,6 +243,148 @@ function extractWorkingSchemeFromPrescription(ex: SuggestNextWorkoutAiExercise):
 
 function formatScheme(s: WorkingScheme): string {
   return `${s.w}×${s.r} ×${s.n}`;
+}
+
+function planForExercise(
+  decisionContext: AiDecisionContext | null,
+  name: string,
+): ProgressionPlanExercise | null {
+  const plans = decisionContext?.progressionPlan?.exercisePlans ?? [];
+  const k = normalizeExerciseName(name);
+  if (!k) return null;
+  return plans.find((p) => normalizeExerciseName(p.exerciseName) === k) ?? null;
+}
+
+function actionLabelShort(action: ProgressionPlanExercise["action"], isRu: boolean): string {
+  if (isRu) {
+    if (action === "increase_reps") return "+повторы";
+    if (action === "increase_weight") return "+вес";
+    if (action === "increase_sets") return "+подход";
+    if (action === "reduce_sets") return "−подход";
+    if (action === "reduce_weight") return "−вес";
+    if (action === "swap_exercise") return "замена";
+    return "держать";
+  }
+  if (action === "increase_reps") return "+reps";
+  if (action === "increase_weight") return "+weight";
+  if (action === "increase_sets") return "+set";
+  if (action === "reduce_sets") return "−set";
+  if (action === "reduce_weight") return "−weight";
+  if (action === "swap_exercise") return "swap";
+  return "maintain";
+}
+
+function deltaLabel(input: { action: ProgressionPlanExercise["action"]; prev: WorkingScheme | null; next: WorkingScheme | null; isRu: boolean }): string {
+  const { action, prev, next, isRu } = input;
+  if (!prev || !next) return actionLabelShort(action, isRu);
+  if (action === "increase_reps" && prev.w === next.w && prev.n === next.n) {
+    const d = next.r - prev.r;
+    if (d !== 0) return isRu ? `${d > 0 ? "+" : ""}${d} повт.` : `${d > 0 ? "+" : ""}${d} rep`;
+  }
+  if (action === "increase_weight" && prev.r === next.r && prev.n === next.n) {
+    const d = Math.round((next.w - prev.w) * 10) / 10;
+    if (d !== 0) return isRu ? `${d > 0 ? "+" : ""}${d} кг` : `${d > 0 ? "+" : ""}${d} kg`;
+  }
+  if (action === "increase_sets" && prev.w === next.w && prev.r === next.r) {
+    const d = next.n - prev.n;
+    if (d !== 0) return isRu ? `${d > 0 ? "+" : ""}${d} подход` : `${d > 0 ? "+" : ""}${d} set`;
+  }
+  return actionLabelShort(action, isRu);
+}
+
+function formatSchemeShort(s: WorkingScheme, isRu: boolean): string {
+  const w = Math.round(s.w * 10) / 10;
+  if (s.n > 1) return isRu ? `${w} кг × ${s.r} × ${s.n}` : `${w} kg × ${s.r} × ${s.n}`;
+  return isRu ? `${w} кг × ${s.r}` : `${w} kg × ${s.r}`;
+}
+
+function todayTargetLine(input: { action: ProgressionPlanExercise["action"]; prev: WorkingScheme | null; next: WorkingScheme | null; isRu: boolean }): string {
+  const { action, prev, next, isRu } = input;
+  if (action === "maintain") {
+    return isRu ? "Сегодня: держи ту же нагрузку" : "Today: keep the same load";
+  }
+  if (action === "reduce_sets") {
+    return isRu ? "Сегодня: меньше подходов" : "Today: fewer sets";
+  }
+  if (action === "reduce_weight") {
+    return isRu ? "Сегодня: легче вес" : "Today: lighter load";
+  }
+  if (action === "swap_exercise") {
+    return isRu ? "Сегодня: замени упражнение" : "Today: swap the movement";
+  }
+  if (next) return `${isRu ? "Сегодня" : "Today"}: ${formatSchemeShort(next, isRu)}`;
+  if (prev) return `${isRu ? "Сегодня" : "Today"}: ${formatSchemeShort(prev, isRu)}`;
+  return isRu ? "Сегодня: —" : "Today: —";
+}
+
+function TodaysProgressionPlan({
+  result,
+  decisionContext,
+  locale,
+  t,
+}: {
+  result: SuggestNextWorkoutResponse;
+  decisionContext: AiDecisionContext | null;
+  locale: string;
+  t: T;
+}) {
+  const isRu = locale === "ru";
+  const fatigue = decisionContext?.fatigueSignals ?? null;
+  const hasExerciseBaselines = (fatigue?.exerciseBaselines?.length ?? 0) > 0;
+  const rows = result.exercises
+    .map((ex) => {
+      const plan = planForExercise(decisionContext, ex.name);
+      if (!plan) return null;
+      const baseline = hasExerciseBaselines ? findBaselineForExerciseName(fatigue, ex.name) : null;
+      const prev = baseline?.latestSets?.length ? extractWorkingSchemeFromBaseline(baseline.latestSets) : null;
+      const next = extractWorkingSchemeFromPrescription(ex);
+      return { ex, plan, prev, next, baseline };
+    })
+    .filter(Boolean) as Array<{
+    ex: SuggestNextWorkoutAiExercise;
+    plan: ProgressionPlanExercise;
+    prev: WorkingScheme | null;
+    next: WorkingScheme | null;
+    baseline: unknown;
+  }>;
+
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="space-y-2">
+      <SectionHeader title={t("todays_progression_plan")} />
+      <Card className="!p-5">
+        <div className="space-y-4">
+          {rows.map(({ ex, plan, prev, next }, idx) => {
+            const { title } = splitExerciseName(ex.name);
+            const planned = deltaLabel({ action: plan.action, prev, next, isRu });
+            const reason = (plan.reason ?? "").trim();
+            return (
+              <div key={`${ex.name}-${idx}`} className="min-w-0 border-b border-neutral-800/70 pb-4 last:border-b-0 last:pb-0">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-neutral-100">{title}</p>
+                    <p className="mt-1 text-sm text-neutral-400">
+                      {prev ? `${isRu ? "Было" : "Last"}: ${formatSchemeShort(prev, isRu)}` : `${isRu ? "Было" : "Last"}: —`}
+                    </p>
+                    <p className="mt-1 text-sm text-neutral-200/90">
+                      {todayTargetLine({ action: plan.action, prev, next, isRu })}
+                    </p>
+                    {reason ? (
+                      <p className="mt-1 text-sm text-neutral-500">
+                        {isRu ? "Причина" : "Reason"}: {reason}
+                      </p>
+                    ) : null}
+                  </div>
+                  <Tag tone="violet">{planned}</Tag>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+    </section>
+  );
 }
 
 function computeComparableHistoryLineRu(
@@ -910,6 +1059,13 @@ export function AiCoachSuggestionResult({
           </div>
         </section>
       ) : null}
+
+      <TodaysProgressionPlan
+        result={result}
+        decisionContext={decisionContext}
+        locale={locale}
+        t={t}
+      />
 
       {/* Exercises */}
       <section className="space-y-2">

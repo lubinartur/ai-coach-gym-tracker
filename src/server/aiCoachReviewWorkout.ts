@@ -1,6 +1,7 @@
 import type { AppLanguage } from "@/i18n/language";
 import { parseAppLanguage } from "@/i18n/language";
 import { shouldRetryRussianWorkoutReview } from "@/lib/aiWorkoutReviewLanguageCheck";
+import { localizeWorkoutReviewRu } from "@/lib/muscleNameLocale";
 import type {
   WorkoutAiReview,
   WorkoutReviewGrade,
@@ -35,8 +36,11 @@ The user JSON includes a workoutContext object. Read it from JSON:
 - workoutContext.sets
 - workoutContext.exercises
 
+The user JSON also includes workoutGoal. Read it from JSON:
+- workoutGoal (hypertrophy | strength | fat_loss | general_fitness)
+
 ## Rules
-If workoutContext.mode is SINGLE MUSCLE:
+If workoutContext.mode is "single_muscle":
 Do NOT criticize missing other muscle groups.
 Do NOT suggest adding unrelated muscle groups.
 Instead evaluate:
@@ -44,6 +48,14 @@ Instead evaluate:
 2. Exercise selection (variety)
 3. Consistency (sets/reps stability)
 4. Training density (work done per time, if duration is reliable)
+
+If workoutContext.mode is NOT "full_body":
+- Do NOT recommend adding exercises for unrelated muscle groups.
+- Keep advice focused on workoutContext.target_muscles.
+
+If workoutGoal is "hypertrophy":
+- Prioritize analysis of: volume, progressive overload, and exercise variety.
+- Do NOT suggest unrelated muscle groups unless workoutContext.mode is "full_body".
 
 Ensure the score matches the feedback.
 
@@ -87,6 +99,19 @@ const systemPromptRu = `Ты AI‑тренер по силе: анализиру
 ## Язык ответа
 Во входных данных поле "language" равно "ru". Всё, что читает человек, должно быть ПО-РУССКИ: "verdict", "summary", все пункты в массивах, текст в "exercise_notes.note". Ключи JSON — на английском. Значения "grade" (A+, B+ и т. д.) — латиницей как в схеме. Поле "name" в exercise_notes — название движения КАК В ДНЕВНИКЕ (часто на английском) — НЕ ПЕРЕВОДИ названия упражнений.
 
+## Названия мышц (важно)
+Если упоминаешь мышцы, используй РУССКИЕ названия, не английские:
+- quads → квадрицепсы
+- chest → грудь
+- back → спина
+- biceps → бицепс
+- triceps → трицепс
+- shoulders → плечи
+- glutes → ягодицы
+- hamstrings → бицепс бедра
+- calves → икры
+НЕ переводи названия упражнений (например: Back Squat, Barbell Bench Press, Lat Pulldown) — они должны остаться как в дневнике.
+
 ## Оценка (обязательно)
 - "score" — целое 0–100, насколько удачно прошла тренировка по логу. Не оценивай только большим объёмом. Штраф: лишний объём при усталости, сильный срыв повторов, плохая прогрессия. Похвала: закрытые подходы, стабильная техника, реалистичная прогрессия, согласованность с целью из данных.
 - Диапазоны: 90–100 отлично; 80–89 сильно; 70–79 хорошо, но есть внимание; 60–69 смешанно; ниже 60 слабо/восстановление.
@@ -101,8 +126,11 @@ const systemPromptRu = `Ты AI‑тренер по силе: анализиру
 - workoutContext.sets
 - workoutContext.exercises
 
+Также во входном JSON есть workoutGoal:
+- workoutGoal (hypertrophy | strength | fat_loss | general_fitness)
+
 ## Правила
-Если workoutContext.mode = SINGLE MUSCLE:
+Если workoutContext.mode = "single_muscle":
 НЕ ругай за отсутствие других групп мышц.
 НЕ предлагай добавлять нерелевантные группы мышц.
 Оцени:
@@ -110,6 +138,14 @@ const systemPromptRu = `Ты AI‑тренер по силе: анализиру
 2. Выбор/разнообразие упражнений
 3. Стабильность подходов
 4. Плотность тренировки (если длительность надёжна)
+
+Если workoutContext.mode НЕ равен "full_body":
+- НЕ предлагай добавлять упражнения на нерелевантные группы мышц.
+- Держи советы в рамках workoutContext.target_muscles.
+
+Если workoutGoal = "hypertrophy":
+- В анализе сделай упор на: объём, прогрессивную перегрузку и разнообразие упражнений.
+- НЕ предлагай нерелевантные группы мышц, если это не workoutContext.mode = "full_body".
 
 Оценка score должна соответствовать тому, что ты написал.
 
@@ -205,6 +241,7 @@ function buildUserPayload(input: WorkoutReviewRequestPayload, lang: AppLanguage)
   const exerciseList = (cs.exercises ?? []).map((e) => e.name).filter(Boolean);
   return {
     language: lang,
+    workoutGoal: input.workoutGoal ?? "general_fitness",
     workoutContext: {
       mode: cs.workoutMode ?? "custom",
       target_muscles: cs.targetMuscles ?? [],
@@ -297,7 +334,9 @@ ${JSON.stringify({ ...userJson, locale: lang })}`;
       continue;
     }
 
-    if (lang === "ru" && shouldRetryRussianWorkoutReview(valid)) {
+    const normalized = lang === "ru" ? localizeWorkoutReviewRu(valid) : valid;
+
+    if (lang === "ru" && shouldRetryRussianWorkoutReview(normalized)) {
       console.warn(
         "[ai-coach review] Russian review looked English-heavy; retrying",
         { attempt },
@@ -306,7 +345,7 @@ ${JSON.stringify({ ...userJson, locale: lang })}`;
       continue;
     }
 
-    return valid;
+    return normalized;
   }
 
   return null;

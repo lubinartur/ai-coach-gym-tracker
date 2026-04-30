@@ -1,25 +1,32 @@
 "use client";
 
-import { BarChart3, Dumbbell, Home, Settings } from "lucide-react";
+import { BarChart3, Dumbbell, History, Home, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useI18n } from "@/i18n/LocaleContext";
 
 const tabs = [
-  { href: "/", key: "home", labelKey: "tab_home", Icon: Home, match: (p: string) => p === "/" },
+  { href: "/", key: "today", labelKey: "tab_today", Icon: Home, match: (p: string) => p === "/" },
   {
-    href: "/exercises",
+    href: "/workout",
     key: "workout",
     labelKey: "tab_workout",
     Icon: Dumbbell,
-    match: (p: string) => p === "/exercises" || p.startsWith("/exercises/"),
+    match: (p: string) => p === "/workout" || p.startsWith("/workout/"),
   },
   {
-    href: "/history",
+    href: "/progress",
     key: "progress",
     labelKey: "tab_progress",
     Icon: BarChart3,
-    match: (p: string) => p === "/history" || p.startsWith("/workout/"),
+    match: (p: string) => p === "/progress" || p.startsWith("/progress/"),
+  },
+  {
+    href: "/history",
+    key: "history",
+    labelKey: "tab_history",
+    Icon: History,
+    match: (p: string) => p === "/history",
   },
   {
     href: "/settings",
