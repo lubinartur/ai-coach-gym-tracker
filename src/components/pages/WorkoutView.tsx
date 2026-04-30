@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, ChevronRight, Dumbbell, Flame, Layers, Play, Repeat2, Trash2, Wand2 } from "lucide-react";
 import { ExerciseSetRow } from "@/components/workout/ExerciseSetRow";
@@ -75,7 +74,6 @@ const TEMPLATE_META_CLASS = "mt-1 text-xs tabular-nums text-neutral-600";
 
 export function WorkoutView() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const { t, locale } = useI18n();
   const { profile } = useAthleteProfile();
   const [mode, setMode] = useState<WorkoutMode>("idle");
@@ -117,19 +115,19 @@ export function WorkoutView() {
   const [aiExerciseCatalog, setAiExerciseCatalog] = useState<Exercise[] | null>(null);
   const [aiMode, setAiMode] = useState<AiCoachMode>("history_based");
   const [templatesOpen, setTemplatesOpen] = useState(false);
-  const [customBuilderOpen, setCustomBuilderOpen] = useState(false);
+  const [customBuilderOpen, setCustomBuilderOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return new URLSearchParams(window.location.search).get("custom") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [customMuscles, setCustomMuscles] = useState<string[]>([]);
   const [customDuration, setCustomDuration] = useState<number | null>(null);
   const [customFocus, setCustomFocus] = useState<string | null>(null);
   const [customGenerating, setCustomGenerating] = useState(false);
   const [customPreviewOpen, setCustomPreviewOpen] = useState(false);
-
-  useEffect(() => {
-    // Quick-start entrypoint: allow Today screen to jump straight into the custom workout builder.
-    if (searchParams?.get("custom") === "1") {
-      setCustomBuilderOpen(true);
-    }
-  }, [searchParams]);
 
   useEffect(() => {
     const onPop = (e: PopStateEvent) => {
@@ -923,7 +921,7 @@ export function WorkoutView() {
         performedAt: t,
         title: title.trim() || "Workout",
         durationMin:
-          typeof durationMin === "number" && Number.isFinite(durationMin)
+          typeof durationMin === "number" && Number.isFinite(durationMin) && durationMin > 0
             ? durationMin
             : undefined,
         notes: notes.trim() || undefined,

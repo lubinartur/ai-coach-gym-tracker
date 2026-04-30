@@ -28,6 +28,7 @@ import type { MuscleVolumeWindow } from "@/lib/analytics/muscleVolume";
 import { buildStrengthSeries } from "@/lib/analytics/strengthSeries";
 import { inferWorkoutTitleFromExercises } from "@/lib/workoutTitleInference";
 import type { Exercise, WorkoutSession } from "@/types/trainingDiary";
+import { Tag } from "@/components/ui/Tag";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -141,6 +142,38 @@ export function HistoryView({ mode = "history" }: { mode?: "history" | "progress
     [items],
   );
 
+  function isCalibrationWorkout(w: WorkoutSession): boolean {
+    const title = (w.title ?? "").toLowerCase();
+    if (title.includes("calibration") || title.includes("калибр")) return true;
+    const sum = (w.aiReview?.summary ?? "").toLowerCase();
+    if (sum.includes("calibration") || sum.includes("калибр")) return true;
+    return false;
+  }
+
+  function splitBadgeFromInferredTitle(title: string): string | null {
+    const t0 = (title ?? "").trim();
+    if (!t0) return null;
+    const m = t0.match(/^(Full Body|Upper Body|Push|Pull|Legs)\b/i);
+    if (!m) return null;
+    const s = m[1] ?? "";
+    if (!s) return null;
+    if (locale === "ru") {
+      if (/full body/i.test(s)) return "Всё тело";
+      if (/upper body/i.test(s)) return "Верх";
+      if (/push/i.test(s)) return "Толкать";
+      if (/pull/i.test(s)) return "Тянуть";
+      if (/legs/i.test(s)) return "Ноги";
+    }
+    return s;
+  }
+
+  function goalBadgeFromTitle(title: string): string | null {
+    const s = (title ?? "").toLowerCase();
+    if (s.includes("hypertrophy")) return locale === "ru" ? "Гипертрофия" : "Hypertrophy";
+    if (s.includes("strength")) return locale === "ru" ? "Сила" : "Strength";
+    return null;
+  }
+
   const timeZone = useMemo(() => getDefaultTimezone(), []);
 
   const trainingConsistency = useMemo(
@@ -236,10 +269,10 @@ export function HistoryView({ mode = "history" }: { mode?: "history" | "progress
           {t("life_panel_brand")}
         </p>
         <h1 className="text-[28px] font-bold leading-tight text-neutral-50">
-          {t("screen_progress")}
+          {mode === "history" ? t("screen_history") : t("screen_progress")}
         </h1>
         <p className="text-sm text-neutral-500">
-          {t("screen_progress_subtitle")}
+          {mode === "history" ? t("screen_history_subtitle") : t("screen_progress_subtitle")}
         </p>
       </header>
 
@@ -247,138 +280,140 @@ export function HistoryView({ mode = "history" }: { mode?: "history" | "progress
         <p className="text-sm text-neutral-500">{t("loading")}</p>
       ) : (
         <>
-          <TrainingConsistencyCard
-            title={t("progress_section_consistency")}
-            score={trainingConsistency.consistencyScore}
-            status={trainingConsistency.status}
-            currentStreakWeeks={trainingConsistency.currentStreakWeeks}
-            daysSinceLastWorkout={trainingConsistency.daysSinceLastWorkout}
-            workoutsLast7Days={trainingConsistency.workoutsLast7Days}
-            t={t}
-          />
+          {mode === "progress" ? (
+            <>
+              <TrainingConsistencyCard
+                title={t("progress_section_consistency")}
+                score={trainingConsistency.consistencyScore}
+                status={trainingConsistency.status}
+                currentStreakWeeks={trainingConsistency.currentStreakWeeks}
+                daysSinceLastWorkout={trainingConsistency.daysSinceLastWorkout}
+                workoutsLast7Days={trainingConsistency.workoutsLast7Days}
+                t={t}
+              />
 
-          <section className="min-w-0 space-y-2">
-            <SectionHeader
-              title={t("progress_section_weekly_load")}
-              right={
-                <div className="text-right text-xs text-neutral-500">
-                  <span className="block tabular-nums text-neutral-400">
-                    {formatKgDisplay(weeklyLoad.total, locale)} {t("stat_unit_kg")}
-                  </span>
-                  <span className="block text-[11px] text-neutral-500">
-                    {t("stat_scope_last_7_days")}
-                  </span>
-                </div>
-              }
-            />
-            <Card className="!p-5">
-              <div className="flex items-end justify-between gap-2">
-                {weeklyLoad.days.map((d) => (
-                  <div
-                    key={d.key}
-                    className="flex min-w-0 flex-1 flex-col items-center gap-2"
-                  >
-                    <div className="flex h-16 w-full items-end">
-                      <div className="relative h-16 w-full rounded-xl bg-neutral-950/40 ring-1 ring-neutral-800/80">
-                        <div
-                          className="absolute bottom-0 left-0 right-0 rounded-xl bg-violet-500/70"
-                          style={{ height: `${Math.max(0.12, d.h) * 100}%` }}
-                        />
-                      </div>
+              <section className="min-w-0 space-y-2">
+                <SectionHeader
+                  title={t("progress_section_weekly_load")}
+                  right={
+                    <div className="text-right text-xs text-neutral-500">
+                      <span className="block tabular-nums text-neutral-400">
+                        {formatKgDisplay(weeklyLoad.total, locale)} {t("stat_unit_kg")}
+                      </span>
+                      <span className="block text-[11px] text-neutral-500">
+                        {t("stat_scope_last_7_days")}
+                      </span>
                     </div>
-                    <span className="text-[11px] font-medium text-neutral-500">
-                      {t(d.key)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          </section>
-
-          <section className="min-w-0 space-y-2">
-            <SectionHeader
-              title={t("progress_section_muscle_volume")}
-              right={
-                <span className="max-w-[58%] text-right text-[11px] leading-snug text-neutral-500">
-                  {t("progress_muscle_volume_subtitle")}
-                </span>
-              }
-            />
-            <Card className="!p-4">
-              {!items.length || !hasMuscleVolumeData ? (
-                <p className="text-sm leading-relaxed text-neutral-500">
-                  {items.length
-                    ? t("progress_muscle_volume_empty")
-                    : t("no_workouts_yet")}
-                </p>
-              ) : (
-                <ul className="space-y-3.5">
-                  {muscleVolumeRows.map((row) => {
-                    const trend = muscleVolumeTrend(row.current, row.previous);
-                    const barPct = Math.min(
-                      100,
-                      Math.max(0, (row.current / muscleVolumeMax) * 100),
-                    );
-                    const trendSym =
-                      trend === "up" ? "↑" : trend === "down" ? "↓" : "—";
-                    const trendClass =
-                      trend === "up"
-                        ? "text-emerald-400/90"
-                        : trend === "down"
-                          ? "text-amber-400/85"
-                          : "text-neutral-500";
-                    const trendLabel =
-                      trend === "up"
-                        ? t("trend_up")
-                        : trend === "down"
-                          ? t("trend_down")
-                          : t("trend_flat");
-                    return (
-                      <li key={row.labelKey}>
-                        <div className="mb-1.5 flex items-start justify-between gap-2">
-                          <span className="text-sm font-medium text-neutral-200">
-                            {t(row.labelKey)}
-                          </span>
-                          <div className="shrink-0 text-right">
-                            <span
-                              className="inline-flex items-baseline gap-1.5 tabular-nums"
-                              title={trendLabel}
-                            >
-                              <span className="text-sm font-medium text-neutral-100">
-                                {t("progress_muscle_this_week").replace(
-                                  "{{n}}",
-                                  formatWorkingSetsDisplay(row.current),
-                                )}
-                              </span>
-                              <span
-                                className={"text-xs font-semibold " + trendClass}
-                                aria-hidden
-                              >
-                                {trendSym}
-                              </span>
-                            </span>
-                            <p className="mt-0.5 text-[11px] tabular-nums text-neutral-500">
-                              {t("progress_muscle_prev_week").replace(
-                                "{{n}}",
-                                formatWorkingSetsDisplay(row.previous),
-                              )}
-                            </p>
+                  }
+                />
+                <Card className="!p-5">
+                  <div className="flex items-end justify-between gap-2">
+                    {weeklyLoad.days.map((d) => (
+                      <div
+                        key={d.key}
+                        className="flex min-w-0 flex-1 flex-col items-center gap-2"
+                      >
+                        <div className="flex h-16 w-full items-end">
+                          <div className="relative h-16 w-full rounded-xl bg-neutral-950/40 ring-1 ring-neutral-800/80">
+                            <div
+                              className="absolute bottom-0 left-0 right-0 rounded-xl bg-violet-500/70"
+                              style={{ height: `${Math.max(0.12, d.h) * 100}%` }}
+                            />
                           </div>
                         </div>
-                        <ProgressBar value={barPct} tone="neutral" className="h-1.5" />
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </Card>
-          </section>
+                        <span className="text-[11px] font-medium text-neutral-500">
+                          {t(d.key)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              </section>
 
-          <section className="min-w-0 space-y-2">
-            <SectionHeader title={t("progress_section_strength")} />
-            <Card className="!p-5">
-              <div className="space-y-3">
-                {strengthTrend.map((row) => {
+              <section className="min-w-0 space-y-2">
+                <SectionHeader
+                  title={t("progress_section_muscle_volume")}
+                  right={
+                    <span className="max-w-[58%] text-right text-[11px] leading-snug text-neutral-500">
+                      {t("progress_muscle_volume_subtitle")}
+                    </span>
+                  }
+                />
+                <Card className="!p-4">
+                  {!items.length || !hasMuscleVolumeData ? (
+                    <p className="text-sm leading-relaxed text-neutral-500">
+                      {items.length
+                        ? t("progress_muscle_volume_empty")
+                        : t("no_workouts_yet")}
+                    </p>
+                  ) : (
+                    <ul className="space-y-3.5">
+                      {muscleVolumeRows.map((row) => {
+                        const trend = muscleVolumeTrend(row.current, row.previous);
+                        const barPct = Math.min(
+                          100,
+                          Math.max(0, (row.current / muscleVolumeMax) * 100),
+                        );
+                        const trendSym =
+                          trend === "up" ? "↑" : trend === "down" ? "↓" : "—";
+                        const trendClass =
+                          trend === "up"
+                            ? "text-emerald-400/90"
+                            : trend === "down"
+                              ? "text-amber-400/85"
+                              : "text-neutral-500";
+                        const trendLabel =
+                          trend === "up"
+                            ? t("trend_up")
+                            : trend === "down"
+                              ? t("trend_down")
+                              : t("trend_flat");
+                        return (
+                          <li key={row.labelKey}>
+                            <div className="mb-1.5 flex items-start justify-between gap-2">
+                              <span className="text-sm font-medium text-neutral-200">
+                                {t(row.labelKey)}
+                              </span>
+                              <div className="shrink-0 text-right">
+                                <span
+                                  className="inline-flex items-baseline gap-1.5 tabular-nums"
+                                  title={trendLabel}
+                                >
+                                  <span className="text-sm font-medium text-neutral-100">
+                                    {t("progress_muscle_this_week").replace(
+                                      "{{n}}",
+                                      formatWorkingSetsDisplay(row.current),
+                                    )}
+                                  </span>
+                                  <span
+                                    className={"text-xs font-semibold " + trendClass}
+                                    aria-hidden
+                                  >
+                                    {trendSym}
+                                  </span>
+                                </span>
+                                <p className="mt-0.5 text-[11px] tabular-nums text-neutral-500">
+                                  {t("progress_muscle_prev_week").replace(
+                                    "{{n}}",
+                                    formatWorkingSetsDisplay(row.previous),
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+                            <ProgressBar value={barPct} tone="neutral" className="h-1.5" />
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </Card>
+              </section>
+
+              <section className="min-w-0 space-y-2">
+                <SectionHeader title={t("progress_section_strength")} />
+                <Card className="!p-5">
+                  <div className="space-y-3">
+                    {strengthTrend.map((row) => {
                   const last = row.series.length
                     ? row.series[row.series.length - 1]!
                     : null;
@@ -441,79 +476,81 @@ export function HistoryView({ mode = "history" }: { mode?: "history" | "progress
                       {inner}
                     </div>
                   );
-                })}
-              </div>
-            </Card>
-          </section>
+                    })}
+                  </div>
+                </Card>
+              </section>
 
-          <section className="min-w-0 space-y-2">
-            <SectionHeader title={t("progress_section_totals")} />
-            <div className="grid grid-cols-2 gap-3">
-              <MetricCard
-                label={t("stat_workouts_with_scope")}
-                value={summary.totalWorkouts}
-                hint={t("stat_scope_all_time")}
-              />
-              <MetricCard
-                label={t("stat_total_sets_with_scope")}
-                value={summary.totalSets}
-                hint={t("stat_scope_all_time")}
-              />
-              <MetricCard
-                label={t("stat_total_volume_with_scope")}
-                value={`${formatKgDisplay(summary.totalVolume, locale)} ${t("stat_unit_kg")}`}
-                hint={t("stat_scope_all_time")}
-                className="col-span-2"
-              />
-              <MetricCard
-                label={t("stat_volume_last_7_days")}
-                value={`${formatKgDisplay(weeklyLoad.total, locale)} ${t("stat_unit_kg")}`}
-                hint={t("stat_scope_last_7_days")}
-                className="col-span-2"
-              />
-            </div>
-          </section>
-
-          {mode === "history" ? (
-            <section>
+              <section className="min-w-0 space-y-2">
+                <SectionHeader title={t("progress_section_totals")} />
+                <div className="grid grid-cols-2 gap-3">
+                  <MetricCard
+                    label={t("stat_workouts_with_scope")}
+                    value={summary.totalWorkouts}
+                    hint={t("stat_scope_all_time")}
+                  />
+                  <MetricCard
+                    label={t("stat_total_sets_with_scope")}
+                    value={summary.totalSets}
+                    hint={t("stat_scope_all_time")}
+                  />
+                  <MetricCard
+                    label={t("stat_total_volume_with_scope")}
+                    value={`${formatKgDisplay(summary.totalVolume, locale)} ${t("stat_unit_kg")}`}
+                    hint={t("stat_scope_all_time")}
+                    className="col-span-2"
+                  />
+                  <MetricCard
+                    label={t("stat_volume_last_7_days")}
+                    value={`${formatKgDisplay(weeklyLoad.total, locale)} ${t("stat_unit_kg")}`}
+                    hint={t("stat_scope_last_7_days")}
+                    className="col-span-2"
+                  />
+                </div>
+              </section>
+            </>
+          ) : (
+            <section className="space-y-2">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                {t("workout_history_title")}
+                {t("completed_workouts")}
               </h2>
               {items.length === 0 ? (
-                <p className="mt-2 text-sm text-neutral-400">
-                  {t("no_workouts_yet")}
-                </p>
+                <p className="text-sm text-neutral-400">{t("no_workouts_yet")}</p>
               ) : (
                 <div className="mt-2 flex flex-col gap-3">
                   {displayItems.map((w) => {
                     const nEx = w.exercises.length;
                     const hasDur =
                       typeof w.durationMin === "number" && Number.isFinite(w.durationMin);
+                    const inferredTitle =
+                      inferWorkoutTitleFromExercises({
+                        currentTitle: w.title,
+                        exercises: w.exercises,
+                        catalog,
+                        workoutGoal: "general_fitness",
+                      }).inferredTitle.trim() || t("workout_default_title");
+                    const splitBadge = splitBadgeFromInferredTitle(inferredTitle);
+                    const goalBadge = goalBadgeFromTitle(inferredTitle);
+                    const calibration = isCalibrationWorkout(w);
                     return (
                       <Link key={w.id} href={`/workout/${w.id}`} className="block">
                         <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-4 text-neutral-100 transition-opacity active:opacity-90">
-                          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                            {formatWorkoutHistoryDateTime(w)}
+                          <p className="text-base font-semibold text-neutral-100">
+                            {inferredTitle}
                           </p>
-                          <p className="mt-0.5 text-base font-semibold text-neutral-100">
-                            {inferWorkoutTitleFromExercises({
-                              currentTitle: w.title,
-                              exercises: w.exercises,
-                              catalog,
-                              workoutGoal: "general_fitness",
-                            }).inferredTitle.trim() || t("workout_default_title")}
-                          </p>
-                          <p className="mt-1.5 text-sm text-neutral-400">
-                            {t("duration_label")}:{" "}
-                            {hasDur
-                              ? `${w.durationMin} ${t("min_short")}`
-                              : t("duration_emdash")}
+                          <p className="mt-1 text-sm text-neutral-500">
+                            {formatWorkoutHistoryDateTime(w)} ·{" "}
+                            {hasDur ? `${w.durationMin} ${t("min_short")}` : t("duration_emdash")}
                           </p>
                           <p className="mt-1 text-sm text-neutral-300">
-                            {nEx} {t("label_exercises")} · {w.totalSets}{" "}
-                            {t("label_sets")} · {formatKgDisplay(w.totalVolume, locale)}{" "}
-                            {t("stat_unit_kg")}
+                            {nEx} {t("label_exercises")} · {w.totalSets} {t("label_sets")} ·{" "}
+                            {formatKgDisplay(w.totalVolume, locale)} {t("stat_unit_kg")}
                           </p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {splitBadge ? <Tag tone="neutral">{splitBadge}</Tag> : null}
+                            {goalBadge ? <Tag tone="neutral">{goalBadge}</Tag> : null}
+                            {calibration ? <Tag tone="warning">{t("calibration_badge")}</Tag> : null}
+                          </div>
                         </div>
                       </Link>
                     );
@@ -521,7 +558,9 @@ export function HistoryView({ mode = "history" }: { mode?: "history" | "progress
                 </div>
               )}
             </section>
-          ) : null}
+          )}
+
+          {null}
         </>
       )}
     </main>

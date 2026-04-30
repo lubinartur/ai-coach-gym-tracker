@@ -57,12 +57,6 @@ function bucketFromPrimary(m: string): MajorBucket {
   return "other";
 }
 
-function sum(values: Iterable<number>): number {
-  let s = 0;
-  for (const v of values) s += v;
-  return s;
-}
-
 function computeSetDistribution(input: {
   exercises: Array<Pick<WorkoutExercise, "name" | "exerciseId" | "sets">>;
   catalog: Exercise[];

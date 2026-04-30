@@ -6,6 +6,7 @@ import { parseAppLanguage } from "@/i18n/language";
 import { serializeAthleteProfileForAi } from "@/lib/serializeAthleteForAi";
 import { normalizeExerciseName } from "@/lib/exerciseName";
 import { inferWorkoutTitleFromExercises } from "@/lib/workoutTitleInference";
+import { buildAutoProgressionTargetsFromCompletedSession } from "@/services/autoProgressionEngine";
 import {
   buildExerciseStats,
   serializeWorkoutForAi,
@@ -195,6 +196,12 @@ export async function buildWorkoutReviewRequestPayload(
   return {
     language: parseAppLanguage(settings.language),
     workoutGoal: toWorkoutGoal({ athleteGoal: athlete.goal }),
+    autoProgressionTargets: buildAutoProgressionTargetsFromCompletedSession({
+      completed,
+      priorSessions: priorRaw,
+      catalog,
+      workoutGoal: toWorkoutGoal({ athleteGoal: athlete.goal }),
+    }),
     athleteProfile: serializeAthleteProfileForAi(athlete),
     completedSession: serializeCompletedSession(
       completed,

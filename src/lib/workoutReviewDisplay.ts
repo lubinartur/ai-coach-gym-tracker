@@ -160,7 +160,7 @@ export function enforceWorkoutReviewLimits(
       .slice(0, 2)
       .map((s) => oneSentence(s, BULLET_MAX)),
     next_time: review.next_time
-      .slice(0, 2)
+      .slice(0, 3)
       .map((s) => oneSentence(s, BULLET_MAX)),
     exercise_notes,
     ...(insights?.length ? { insights } : {}),

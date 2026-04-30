@@ -18,6 +18,7 @@ import type { AiDecisionContext, ProgressionPlanExercise, SuggestNextWorkoutResp
 import type { Exercise } from "@/types/trainingDiary";
 import { listExercises } from "@/db/exercises";
 import { resolveCatalogRowByExerciseName, buildCatalogLookup } from "@/services/exerciseCatalogResolve";
+import { buildAutoProgressionTargetsFromBaselines } from "@/services/autoProgressionEngine";
 
 type WorkingScheme = { w: number; r: number; n: number };
 
@@ -129,6 +130,36 @@ function formatSchemeShort(s: WorkingScheme, isRu: boolean): string {
   return isRu ? `${w} кг × ${s.r}` : `${w} kg × ${s.r}`;
 }
 
+function autoTone(action: import("@/services/autoProgressionEngine").AutoProgressionAction): import("@/components/ui/Tag").TagTone {
+  if (action === "increase_reps" || action === "increase_weight") return "success";
+  if (action === "reduce_weight" || action === "reduce_sets") return "danger";
+  return "neutral";
+}
+
+function autoBadge(action: import("@/services/autoProgressionEngine").AutoProgressionAction, isRu: boolean): string {
+  if (isRu) {
+    if (action === "increase_reps") return "+1 повт.";
+    if (action === "increase_weight") return "+вес";
+    if (action === "reduce_weight") return "−вес";
+    if (action === "reduce_sets") return "−подход";
+    return "держать";
+  }
+  if (action === "increase_reps") return "+1 rep";
+  if (action === "increase_weight") return "+weight";
+  if (action === "reduce_weight") return "−weight";
+  if (action === "reduce_sets") return "−set";
+  return "maintain";
+}
+
+function stripTargetPrefix(s: string): string {
+  return String(s ?? "").replace(/^\s*(Today|Target)\s*:\s*/i, "").trim();
+}
+
+function localizeKgText(s: string, isRu: boolean): string {
+  if (!isRu) return s;
+  return s.replace(/\bkg\b/g, "кг");
+}
+
 function focusFromExercises(exercises: SuggestNextWorkoutResponse["exercises"], catalog: Exercise[]): string[] {
   if (!exercises.length || !catalog.length) return [];
   const lookup = buildCatalogLookup(catalog);
@@ -173,8 +204,6 @@ export function TodayView() {
 
   useEffect(() => {
     let mounted = true;
-    setLoading(true);
-    setError(null);
     void (async () => {
       try {
         const payload = await buildAiCoachRequestPayload({ aiMode: "history_based" });
@@ -204,6 +233,27 @@ export function TodayView() {
 
   const focus = useMemo(() => (result ? focusFromExercises(result.exercises, catalog) : []), [result, catalog]);
   const splitLabel = (result?.training_signals?.split ?? "").trim() || (result?.title ?? "").trim() || t("suggested_workout");
+
+  const autoTargets = useMemo(() => {
+    if (!result || !decisionContext) return [];
+    const baselines = decisionContext.fatigueSignals?.exerciseBaselines ?? [];
+    return buildAutoProgressionTargetsFromBaselines({
+      suggested: result.exercises,
+      exerciseBaselines: baselines,
+      catalog,
+      workoutGoal: "hypertrophy",
+    });
+  }, [result, decisionContext, catalog]);
+
+  const autoByNorm = useMemo(() => {
+    const m = new Map<string, (typeof autoTargets)[number]>();
+    for (const t of autoTargets) {
+      const k = normalizeExerciseName(t.exerciseName);
+      if (!k) continue;
+      m.set(k, t);
+    }
+    return m;
+  }, [autoTargets]);
 
   function startWorkoutFromResult(r: SuggestNextWorkoutResponse) {
     const draft: AiWorkoutDraftPayload = {
@@ -298,6 +348,8 @@ export function TodayView() {
                 const action = plan?.action ?? null;
                 const reason = (plan?.reason ?? "").trim();
                 const baselineOnly = !prev;
+                const auto = autoByNorm.get(normalizeExerciseName(ex.name) ?? "") ?? null;
+                const autoTargetText = auto ? localizeKgText(stripTargetPrefix(auto.nextTarget), isRu) : null;
                 return (
                   <div key={`${ex.name}-${idx}`} className="min-w-0 border-b border-neutral-800/70 pb-4 last:border-b-0 last:pb-0">
                     <div className="flex items-start justify-between gap-3">
@@ -315,7 +367,9 @@ export function TodayView() {
                             </p>
                             <p className="mt-1 text-sm text-neutral-200/90">
                               {isRu ? "Сегодня" : "Today"}:{" "}
-                              {next
+                              {autoTargetText
+                                ? autoTargetText
+                                : next
                                 ? formatSchemeShort(next, isRu)
                                 : action === "maintain"
                                   ? (isRu ? "держи ту же нагрузку" : "keep the same load")
@@ -329,11 +383,13 @@ export function TodayView() {
                           </p>
                         ) : null}
                       </div>
-                      {action ? (
-                        <Tag tone={badgeTone(action)}>
-                          {computedBadgeText({ action, prev, next, isRu })}
-                        </Tag>
-                      ) : null}
+                      {auto ? (
+                        <Tag tone={autoTone(auto.action)}>{autoBadge(auto.action, isRu)}</Tag>
+                      ) : action ? (
+                          <Tag tone={badgeTone(action)}>
+                            {computedBadgeText({ action, prev, next, isRu })}
+                          </Tag>
+                        ) : null}
                     </div>
                   </div>
                 );

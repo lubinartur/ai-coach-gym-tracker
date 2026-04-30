@@ -408,6 +408,14 @@ export type WorkoutReviewRequestPayload = {
    * This is a simplified, review-only goal (distinct from the onboarding profile goal enum).
    */
   workoutGoal?: "hypertrophy" | "strength" | "fat_loss" | "general_fitness";
+  /** Deterministic progression targets computed from the completed session + log (pre-LLM). */
+  autoProgressionTargets?: Array<{
+    exerciseName: string;
+    action: "increase_reps" | "increase_weight" | "maintain" | "reduce_weight" | "reduce_sets";
+    lastPerformance: string;
+    nextTarget: string;
+    reason: string;
+  }>;
   /** Same shape as suggest-next; only defined fields. */
   athleteProfile: Record<string, unknown>;
   completedSession: {
